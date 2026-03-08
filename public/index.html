@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Granilha Metric | Transporte de Tintas</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="./logo.jpg" alt="Logo da empresa" />
+        <div>
+          <h1>Granilha Metric</h1>
+          <p>Gestao de cargas</p>
+        </div>
+      </div>
+      <div id="session-info" class="session-info hidden"></div>
+      <button id="logout-btn" class="btn btn-dark hidden">Sair</button>
+    </header>
+
+    <main class="container">
+      <section id="login-card" class="card">
+        <h2>Acesso ao sistema</h2>
+        <p>Entre com seu usuario para usar o painel privado.</p>
+        <form id="login-form" class="grid-form">
+          <label>Email
+            <input type="email" name="email" required />
+          </label>
+          <label>Senha
+            <input type="password" name="password" required />
+          </label>
+          <button type="submit" class="btn btn-primary">Entrar</button>
+        </form>
+        <p class="hint">Acesso inicial: admin@granilha.local / admin123</p>
+      </section>
+
+      <section id="app" class="hidden">
+        <div class="layout">
+          <article class="card">
+            <h2>Calculadora de carga</h2>
+            <p>Monte a carga e o sistema escolhe o caminhao ideal sem faltar espaco e com a menor sobra possivel.</p>
+
+            <form id="cargo-item-form" class="inline-form">
+              <label>Lata
+                <select id="can-select" required></select>
+              </label>
+              <label>Quantidade
+                <input id="quantity-input" type="number" min="1" value="1" required />
+              </label>
+              <button type="submit" class="btn btn-primary">Adicionar</button>
+            </form>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Lata</th>
+                  <th>Qtd</th>
+                  <th>Volume unit.</th>
+                  <th>Subtotal</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="cargo-body"></tbody>
+            </table>
+
+            <div class="calc-mode-switch">
+              <label><input type="radio" name="calculationMode" value="automatic" checked /> Automatico</label>
+              <label><input type="radio" name="calculationMode" value="manual" /> Manual</label>
+            </div>
+
+            <div id="automatic-calc-panel">
+              <button id="calculate-btn" class="btn btn-dark">Calcular no modo automatico</button>
+              <div id="calculation-result" class="result-box hidden"></div>
+            </div>
+
+            <div id="manual-calc-panel" class="manual-area hidden">
+              <h3>Selecao manual de caminhões</h3>
+              <label>Distribuicao da carga
+                <select id="manual-distribution-type">
+                  <option value="single">Toda carga em 1 caminhao</option>
+                  <option value="multi">Distribuir em mais de 1 caminhao</option>
+                </select>
+              </label>
+
+              <form id="manual-truck-form" class="manual-inline-form">
+                <label>Caminhao
+                  <select id="manual-truck-select" required></select>
+                </label>
+                <button id="manual-calc-btn" type="submit" class="btn btn-primary">Simular manual</button>
+              </form>
+
+              <div id="manual-multi-panel" class="hidden">
+                <div id="manual-allocation-list" class="allocation-list"></div>
+                <div class="manual-multi-actions">
+                  <button id="add-manual-allocation-btn" type="button" class="row-action">Adicionar caminhao</button>
+                  <button id="manual-multi-calc-btn" type="button" class="btn btn-primary">Simular distribuicao manual</button>
+                </div>
+              </div>
+
+              <div id="manual-result" class="result-box hidden"></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>Latas cadastradas</h2>
+            <p>Clique em uma lata para ver os detalhes completos.</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Formato</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody id="cans-body"></tbody>
+            </table>
+          </article>
+
+          <article class="card">
+            <h2>Caminhoes cadastrados</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Dimensoes internas</th>
+                  <th>Volume total</th>
+                </tr>
+              </thead>
+              <tbody id="trucks-body"></tbody>
+            </table>
+          </article>
+        </div>
+
+        <section id="admin-panel" class="admin-panel hidden">
+          <h2>Painel do administrador</h2>
+          <p>Somente administradores podem cadastrar usuarios, latas e caminhoes.</p>
+
+          <div class="admin-grid">
+            <article class="card">
+              <h3>Novo usuario</h3>
+              <form id="user-form" class="grid-form">
+                <label>Nome
+                  <input name="name" required />
+                </label>
+                <label>Email
+                  <input name="email" type="email" required />
+                </label>
+                <label>Senha
+                  <input name="password" type="password" required />
+                </label>
+                <label>Perfil
+                  <select name="role">
+                    <option value="user">Usuario</option>
+                    <option value="admin">Administrador</option>
+                  </select>
+                </label>
+                <button class="btn btn-primary" type="submit">Cadastrar usuario</button>
+              </form>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nome</th>
+                    <th>Email</th>
+                    <th>Perfil</th>
+                  </tr>
+                </thead>
+                <tbody id="users-body"></tbody>
+              </table>
+            </article>
+
+            <article class="card">
+              <h3>Nova lata</h3>
+              <form id="can-form" class="grid-form">
+                <label>Nome
+                  <input name="name" required />
+                </label>
+                <label>Formato
+                  <select name="shape" id="shape-select">
+                    <option value="square">Lata Quadrada</option>
+                    <option value="cylinder">Balde Cilindrico</option>
+                  </select>
+                </label>
+                <label>Altura (cm)
+                  <input name="heightCm" type="number" min="0.1" step="0.1" required />
+                </label>
+                <label class="shape-square">Lado 1 (cm)
+                  <input name="side1Cm" type="number" min="0.1" step="0.1" />
+                </label>
+                <label class="shape-square">Lado 2 (cm)
+                  <input name="side2Cm" type="number" min="0.1" step="0.1" />
+                </label>
+                <label class="shape-cylinder hidden">Diametro (cm)
+                  <input name="diameterCm" type="number" min="0.1" step="0.1" />
+                </label>
+                <button class="btn btn-primary" type="submit">Cadastrar lata</button>
+              </form>
+            </article>
+
+            <article class="card">
+              <h3>Novo caminhao</h3>
+              <form id="truck-form" class="grid-form">
+                <label>Nome
+                  <input name="name" required />
+                </label>
+                <label>Comprimento interno (cm)
+                  <input name="lengthCm" type="number" min="0.1" step="0.1" required />
+                </label>
+                <label>Largura interna (cm)
+                  <input name="widthCm" type="number" min="0.1" step="0.1" required />
+                </label>
+                <label>Altura interna (cm)
+                  <input name="heightCm" type="number" min="0.1" step="0.1" required />
+                </label>
+                <button class="btn btn-primary" type="submit">Cadastrar caminhao</button>
+              </form>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="entity-modal-overlay" class="modal-overlay hidden">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="entity-modal-title">
+        <div class="modal-header">
+          <h3 id="entity-modal-title">Detalhes</h3>
+          <button id="close-entity-modal-btn" class="row-action" type="button">Fechar</button>
+        </div>
+        <div id="entity-modal-content"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
