@@ -49,6 +49,7 @@ const manualCalcPanel = document.getElementById('manual-calc-panel');
 const manualMultiPanel = document.getElementById('manual-multi-panel');
 const orderStartDateInput = document.getElementById('order-start-date-input');
 const orderEndDateInput = document.getElementById('order-end-date-input');
+const legacyOrderDateInput = document.getElementById('order-date-input');
 const dateAvailabilityHint = document.getElementById('date-availability-hint');
 
 const canSelect = document.getElementById('can-select');
@@ -119,6 +120,7 @@ function bindEvents() {
   document.addEventListener('keydown', onGlobalKeydown);
   orderStartDateInput.value = getTodayDateIso();
   orderEndDateInput.value = getTodayDateIso();
+  syncLegacyOrderDateInput();
   syncCalculationPanels();
   syncCanShapeFields();
 }
@@ -1386,6 +1388,7 @@ function renderManualAllocationRows() {
 }
 
 async function onOrderDateChange() {
+  syncLegacyOrderDateInput();
   state.lastCalculation = null;
   await syncTruckAvailabilityForRange(true);
   sanitizeManualSelections();
@@ -1456,6 +1459,13 @@ function getSelectedOrderRange(showToastOnError) {
   }
 
   return { startDate, endDate };
+}
+
+function syncLegacyOrderDateInput() {
+  if (!legacyOrderDateInput) return;
+  const startDate = String(orderStartDateInput?.value || '').trim();
+  const endDate = String(orderEndDateInput?.value || '').trim();
+  legacyOrderDateInput.value = startDate || endDate || '';
 }
 
 function storeLastCalculation(payload, orderRange) {
