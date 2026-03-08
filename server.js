@@ -68,7 +68,47 @@ function initDb() {
       volume_cm3 REAL NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_by_user_id INTEGER NOT NULL,
+      created_by_name TEXT NOT NULL,
+      scheduled_date TEXT,
+      status TEXT NOT NULL CHECK(status IN ('open', 'completed')) DEFAULT 'open',
+      total_cans INTEGER NOT NULL,
+      total_volume_cm3 REAL NOT NULL,
+      completed_at TEXT,
+      completed_by_user_id INTEGER,
+      completed_by_name TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      can_id INTEGER,
+      can_name TEXT NOT NULL,
+      can_shape TEXT NOT NULL CHECK(can_shape IN ('square', 'cylinder')),
+      quantity INTEGER NOT NULL,
+      unit_volume_cm3 REAL NOT NULL,
+      total_volume_cm3 REAL NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS order_trucks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      truck_id INTEGER NOT NULL,
+      truck_name TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
+    CREATE INDEX IF NOT EXISTS idx_order_trucks_order_id ON order_trucks(order_id);
+    CREATE INDEX IF NOT EXISTS idx_order_trucks_truck_id ON order_trucks(truck_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_order_trucks_order_truck ON order_trucks(order_id, truck_id);
+    CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);
   `);
+
+  ensureOrderSchemaCompatibility();
 
   const userCount = db.prepare('SELECT COUNT(*) AS count FROM users').get().count;
   if (!userCount) {
@@ -111,11 +151,25 @@ function initDb() {
   }
 }
 
+function ensureOrderSchemaCompatibility() {
+  const orderColumns = db.prepare('PRAGMA table_info(orders)').all();
+  const hasScheduledDate = orderColumns.some((column) => column.name === 'scheduled_date');
+
+  if (!hasScheduledDate) {
+    db.exec('ALTER TABLE orders ADD COLUMN scheduled_date TEXT;');
+    db.exec("UPDATE orders SET scheduled_date = date(created_at) WHERE scheduled_date IS NULL OR scheduled_date = '';");
+  }
+
+  db.exec('CREATE INDEX IF NOT EXISTS idx_orders_scheduled_date ON orders(scheduled_date);');
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const canIdMatch = url.pathname.match(/^\/api\/cans\/(\d+)$/);
   const truckIdMatch = url.pathname.match(/^\/api\/trucks\/(\d+)$/);
   const userIdMatch = url.pathname.match(/^\/api\/users\/(\d+)$/);
+  const orderIdMatch = url.pathname.match(/^\/api\/orders\/(\d+)$/);
+  const orderConcludeMatch = url.pathname.match(/^\/api\/orders\/(\d+)\/conclude$/);
 
   if (method === 'POST' && url.pathname === '/api/login') {
     const body = await readJson(req);
@@ -211,6 +265,43 @@ async function handleApi(req, res, url) {
     const user = requireAdmin(req, res);
     if (!user) return;
     return deleteUser(user, res, Number(userIdMatch[1]));
+  }
+
+  if (method === 'GET' && url.pathname === '/api/orders') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    return listOrders(res);
+  }
+
+  if (method === 'POST' && url.pathname === '/api/orders') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    return createOrder(user, res, body);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/truck-availability') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    return getTruckAvailability(res, url.searchParams.get('date'));
+  }
+
+  if (orderIdMatch && method === 'GET') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    return getOrderDetails(res, Number(orderIdMatch[1]));
+  }
+
+  if (orderConcludeMatch && method === 'POST') {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    return concludeOrder(user, res, Number(orderConcludeMatch[1]));
+  }
+
+  if (orderIdMatch && method === 'DELETE') {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    return deleteOrder(res, Number(orderIdMatch[1]));
   }
 
   if (method === 'POST' && url.pathname === '/api/calculate') {
@@ -458,6 +549,299 @@ function deleteUser(currentUser, res, userId) {
   sendJson(res, 200, { ok: true });
 }
 
+function listOrders(res) {
+  const orders = db.prepare(`
+    SELECT
+      id,
+      created_by_user_id,
+      created_by_name,
+      scheduled_date,
+      status,
+      total_cans,
+      total_volume_cm3,
+      completed_at,
+      completed_by_user_id,
+      completed_by_name,
+      created_at
+    FROM orders
+    ORDER BY datetime(created_at) DESC, id DESC
+  `).all();
+
+  sendJson(res, 200, { orders });
+}
+
+function createOrder(currentUser, res, body) {
+  const load = buildLoadSummary(body?.items);
+  if (load.error) {
+    return sendJson(res, load.status || 400, { error: load.error });
+  }
+
+  const parsedDate = parseScheduledDate(body?.scheduledDate);
+  if (parsedDate.error) {
+    return sendJson(res, 400, { error: parsedDate.error });
+  }
+
+  const parsedSelection = parseOrderTruckSelection(body?.allocation?.trucks, load.totalVolumeCm3);
+  if (parsedSelection.error) {
+    return sendJson(res, 400, { error: parsedSelection.error });
+  }
+
+  const unavailableTruckIds = getUnavailableTruckIdsForDate(parsedDate.value);
+  const conflictedTrucks = parsedSelection.allocations.filter((entry) => unavailableTruckIds.has(entry.truckId));
+  if (conflictedTrucks.length) {
+    const truckNames = conflictedTrucks.map((entry) => entry.name).join(', ');
+    return sendJson(res, 409, {
+      error: `Os seguintes caminhoes ja estao reservados para ${parsedDate.value}: ${truckNames}.`
+    });
+  }
+
+  const allocationCheck = buildAllocationResult(load.totalVolumeCm3, parsedSelection.allocations);
+  if (!allocationCheck.fits) {
+    return sendJson(res, 422, { error: 'A carga nao cabe nos caminhoes selecionados para este pedido.' });
+  }
+
+  try {
+    db.exec('BEGIN');
+
+    const orderResult = db.prepare(`
+      INSERT INTO orders (
+        created_by_user_id,
+        created_by_name,
+        scheduled_date,
+        status,
+        total_cans,
+        total_volume_cm3
+      ) VALUES (?, ?, ?, 'open', ?, ?)
+    `).run(currentUser.id, currentUser.name, parsedDate.value, load.totalCans, load.totalVolumeCm3);
+
+    const orderId = Number(orderResult.lastInsertRowid);
+    const insertItem = db.prepare(`
+      INSERT INTO order_items (
+        order_id,
+        can_id,
+        can_name,
+        can_shape,
+        quantity,
+        unit_volume_cm3,
+        total_volume_cm3
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const item of load.breakdown) {
+      insertItem.run(
+        orderId,
+        item.canId,
+        item.canName,
+        item.canShape,
+        item.quantity,
+        item.unitVolumeCm3,
+        item.totalVolumeCm3
+      );
+    }
+
+    const insertOrderTruck = db.prepare(`
+      INSERT INTO order_trucks (order_id, truck_id, truck_name)
+      VALUES (?, ?, ?)
+    `);
+    for (const allocation of parsedSelection.allocations) {
+      insertOrderTruck.run(orderId, allocation.truckId, allocation.name);
+    }
+
+    db.exec('COMMIT');
+    sendJson(res, 201, { ok: true, orderId });
+  } catch (error) {
+    db.exec('ROLLBACK');
+    console.error(error);
+    sendJson(res, 500, { error: 'Nao foi possivel lancar o pedido.' });
+  }
+}
+
+function getOrderDetails(res, orderId) {
+  const order = db.prepare(`
+    SELECT
+      id,
+      created_by_user_id,
+      created_by_name,
+      scheduled_date,
+      status,
+      total_cans,
+      total_volume_cm3,
+      completed_at,
+      completed_by_user_id,
+      completed_by_name,
+      created_at
+    FROM orders
+    WHERE id = ?
+  `).get(orderId);
+
+  if (!order) {
+    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+  }
+
+  const items = db.prepare(`
+    SELECT
+      id,
+      order_id,
+      can_id,
+      can_name,
+      can_shape,
+      quantity,
+      unit_volume_cm3,
+      total_volume_cm3
+    FROM order_items
+    WHERE order_id = ?
+    ORDER BY id ASC
+  `).all(orderId);
+
+  const trucks = db.prepare(`
+    SELECT
+      truck_id,
+      truck_name
+    FROM order_trucks
+    WHERE order_id = ?
+    ORDER BY truck_name ASC
+  `).all(orderId);
+
+  sendJson(res, 200, { order, items, trucks });
+}
+
+function concludeOrder(currentUser, res, orderId) {
+  const existing = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(orderId);
+  if (!existing) {
+    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+  }
+
+  if (existing.status === 'completed') {
+    return sendJson(res, 400, { error: 'Este pedido ja foi concluido.' });
+  }
+
+  db.prepare(`
+    UPDATE orders
+    SET status = 'completed',
+        completed_at = CURRENT_TIMESTAMP,
+        completed_by_user_id = ?,
+        completed_by_name = ?
+    WHERE id = ?
+  `).run(currentUser.id, currentUser.name, orderId);
+
+  sendJson(res, 200, { ok: true });
+}
+
+function deleteOrder(res, orderId) {
+  const orderExists = db.prepare('SELECT id FROM orders WHERE id = ?').get(orderId);
+  if (!orderExists) {
+    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+  }
+
+  try {
+    db.exec('BEGIN');
+    db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderId);
+    db.prepare('DELETE FROM order_trucks WHERE order_id = ?').run(orderId);
+    db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+    db.exec('COMMIT');
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    db.exec('ROLLBACK');
+    console.error(error);
+    sendJson(res, 500, { error: 'Nao foi possivel excluir o pedido.' });
+  }
+}
+
+function getTruckAvailability(res, scheduledDateRaw) {
+  const parsedDate = parseScheduledDate(scheduledDateRaw);
+  if (parsedDate.error) {
+    return sendJson(res, 400, { error: parsedDate.error });
+  }
+
+  const busyRows = getUnavailableTruckRowsForDate(parsedDate.value);
+  const busyTruckIds = [...new Set(busyRows.map((row) => row.truck_id))];
+
+  sendJson(res, 200, {
+    date: parsedDate.value,
+    busyTruckIds,
+    busyTrucks: busyRows
+  });
+}
+
+function parseScheduledDate(value) {
+  const date = String(value || '').trim();
+  if (!date) {
+    return { error: 'Informe a data do pedido.' };
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { error: 'Data do pedido invalida. Use o formato YYYY-MM-DD.' };
+  }
+
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    return { error: 'Data do pedido invalida.' };
+  }
+
+  return { value: date };
+}
+
+function getUnavailableTruckRowsForDate(scheduledDate) {
+  return db.prepare(`
+    SELECT
+      ot.truck_id,
+      ot.truck_name,
+      ot.order_id,
+      o.status
+    FROM order_trucks ot
+    INNER JOIN orders o ON o.id = ot.order_id
+    WHERE o.scheduled_date = ?
+    ORDER BY ot.truck_name ASC
+  `).all(scheduledDate);
+}
+
+function getUnavailableTruckIdsForDate(scheduledDate) {
+  const rows = getUnavailableTruckRowsForDate(scheduledDate);
+  return new Set(rows.map((row) => row.truck_id));
+}
+
+function parseOrderTruckSelection(rawTrucks, totalVolumeCm3) {
+  const trucks = Array.isArray(rawTrucks) ? rawTrucks : [];
+  if (!trucks.length) {
+    return { error: 'Calcule a carga e selecione os caminhoes antes de lancar o pedido.' };
+  }
+
+  const selected = [];
+  const usedTruckIds = new Set();
+
+  for (const item of trucks) {
+    const truckId = Number(item?.truckId);
+    const quantity = Number(item?.quantity ?? 1);
+    if (!Number.isInteger(truckId) || !Number.isInteger(quantity) || quantity <= 0) {
+      return { error: 'Selecao de caminhoes invalida.' };
+    }
+
+    if (quantity !== 1) {
+      return { error: 'Cada caminhao pode ser usado apenas uma vez por pedido.' };
+    }
+
+    if (usedTruckIds.has(truckId)) {
+      return { error: 'Nao repita o mesmo caminhao na selecao do pedido.' };
+    }
+
+    const truck = db.prepare('SELECT id, name, volume_cm3 FROM trucks WHERE id = ?').get(truckId);
+    if (!truck) {
+      return { error: `Caminhao ${truckId} nao encontrado.` };
+    }
+
+    usedTruckIds.add(truckId);
+    selected.push({
+      truckId: truck.id,
+      name: truck.name,
+      quantity: 1,
+      unitVolumeCm3: truck.volume_cm3
+    });
+  }
+
+  const allocation = buildAllocationResult(totalVolumeCm3, selected);
+  return { allocations: selected, allocation };
+}
+
 function parseCanPayload(body) {
   const name = String(body?.name || '').trim();
   const shape = String(body?.shape || '').trim();
@@ -515,23 +899,47 @@ function calculateLoad(res, body) {
     return sendJson(res, load.status || 400, { error: load.error });
   }
 
-  const trucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
-  if (!trucks.length) {
+  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+  if (!allTrucks.length) {
     return sendJson(res, 422, { error: 'Nao ha caminhoes cadastrados para calcular a carga.' });
+  }
+
+  const hasScheduledDate = body?.scheduledDate !== undefined && body?.scheduledDate !== null && String(body?.scheduledDate).trim() !== '';
+  const scheduledDate = hasScheduledDate ? parseScheduledDate(body?.scheduledDate) : { value: null };
+  if (scheduledDate.error) {
+    return sendJson(res, 400, { error: scheduledDate.error });
+  }
+
+  const unavailableTruckIds = scheduledDate.value ? getUnavailableTruckIdsForDate(scheduledDate.value) : new Set();
+  const availableTrucks = allTrucks.filter((truck) => !unavailableTruckIds.has(truck.id));
+  if (!availableTrucks.length) {
+    return sendJson(res, 422, {
+      error: scheduledDate.value
+        ? `Nao ha caminhoes disponiveis para a data ${scheduledDate.value}.`
+        : 'Nao ha caminhoes cadastrados para calcular a carga.'
+    });
   }
 
   const mode = String(body?.mode || 'automatic').trim().toLowerCase();
   if (mode === 'manual') {
-    return calculateManualLoad(res, body, load, trucks);
+    return calculateManualLoad(res, body, load, availableTrucks, {
+      allTrucks,
+      unavailableTruckIds,
+      scheduledDate: scheduledDate.value
+    });
   }
 
-  return calculateAutomaticLoad(res, load, trucks);
+  return calculateAutomaticLoad(res, load, availableTrucks, {
+    allTrucks,
+    unavailableTruckIds,
+    scheduledDate: scheduledDate.value
+  });
 }
 
-function calculateAutomaticLoad(res, load, trucks) {
-  const options = buildTruckOptions(trucks, load.totalVolumeCm3);
+function calculateAutomaticLoad(res, load, trucks, context = {}) {
+  const options = buildTruckOptions(context.allTrucks || trucks, load.totalVolumeCm3, context.unavailableTruckIds || new Set());
   const bestSingle = options
-    .filter((truck) => truck.fits)
+    .filter((truck) => truck.isAvailable && truck.fits)
     .sort((a, b) => a.leftoverCm3 - b.leftoverCm3)[0];
 
   if (bestSingle) {
@@ -547,6 +955,7 @@ function calculateAutomaticLoad(res, load, trucks) {
     return sendJson(res, 200, {
       mode: 'automatic',
       strategy: 'single',
+      scheduledDate: context.scheduledDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -559,6 +968,7 @@ function calculateAutomaticLoad(res, load, trucks) {
   if (!fleet) {
     return sendJson(res, 422, {
       error: 'Nao foi possivel encontrar combinacao de caminhoes para comportar a carga.',
+      scheduledDate: context.scheduledDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -571,6 +981,7 @@ function calculateAutomaticLoad(res, load, trucks) {
   return sendJson(res, 200, {
     mode: 'automatic',
     strategy: 'multi',
+    scheduledDate: context.scheduledDate || null,
     totalVolumeCm3: load.totalVolumeCm3,
     totalCans: load.totalCans,
     breakdown: load.breakdown,
@@ -579,7 +990,7 @@ function calculateAutomaticLoad(res, load, trucks) {
   });
 }
 
-function calculateManualLoad(res, body, load, trucks) {
+function calculateManualLoad(res, body, load, trucks, context = {}) {
   const type = String(body?.manual?.type || 'single').trim().toLowerCase();
 
   if (type === 'single') {
@@ -590,6 +1001,10 @@ function calculateManualLoad(res, body, load, trucks) {
 
     const truck = trucks.find((entry) => entry.id === truckId);
     if (!truck) {
+      const unavailableTruck = (context.allTrucks || []).find((entry) => entry.id === truckId);
+      if (unavailableTruck && (context.unavailableTruckIds || new Set()).has(truckId) && context.scheduledDate) {
+        return sendJson(res, 409, { error: `O caminhao "${unavailableTruck.name}" ja esta reservado para ${context.scheduledDate}.` });
+      }
       return sendJson(res, 404, { error: 'Caminhao selecionado nao encontrado.' });
     }
 
@@ -605,6 +1020,7 @@ function calculateManualLoad(res, body, load, trucks) {
     return sendJson(res, 200, {
       mode: 'manual',
       strategy: 'single',
+      scheduledDate: context.scheduledDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -621,25 +1037,37 @@ function calculateManualLoad(res, body, load, trucks) {
     const byTruckId = new Map();
     for (const item of rawAllocations) {
       const truckId = Number(item?.truckId);
-      const quantity = Number(item?.quantity);
+      const quantity = Number(item?.quantity ?? 1);
       if (!Number.isInteger(truckId) || !Number.isInteger(quantity) || quantity <= 0) {
-        return sendJson(res, 400, { error: 'Distribuicao manual invalida. Verifique caminhao e quantidade.' });
+        return sendJson(res, 400, { error: 'Distribuicao manual invalida. Verifique os caminhoes selecionados.' });
       }
 
-      byTruckId.set(truckId, (byTruckId.get(truckId) || 0) + quantity);
+      if (quantity !== 1) {
+        return sendJson(res, 400, { error: 'Cada caminhao pode ser usado apenas uma vez por pedido.' });
+      }
+
+      if (byTruckId.has(truckId)) {
+        return sendJson(res, 400, { error: 'Nao repita o mesmo caminhao na distribuicao manual.' });
+      }
+
+      byTruckId.set(truckId, quantity);
     }
 
     const allocations = [];
     for (const [truckId, quantity] of byTruckId.entries()) {
       const truck = trucks.find((entry) => entry.id === truckId);
       if (!truck) {
+        const unavailableTruck = (context.allTrucks || []).find((entry) => entry.id === truckId);
+        if (unavailableTruck && (context.unavailableTruckIds || new Set()).has(truckId) && context.scheduledDate) {
+          return sendJson(res, 409, { error: `O caminhao "${unavailableTruck.name}" ja esta reservado para ${context.scheduledDate}.` });
+        }
         return sendJson(res, 404, { error: `Caminhao ${truckId} nao encontrado.` });
       }
 
       allocations.push({
         truckId: truck.id,
         name: truck.name,
-        quantity,
+        quantity: 1,
         unitVolumeCm3: truck.volume_cm3
       });
     }
@@ -648,6 +1076,7 @@ function calculateManualLoad(res, body, load, trucks) {
     return sendJson(res, 200, {
       mode: 'manual',
       strategy: 'multi',
+      scheduledDate: context.scheduledDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -675,7 +1104,7 @@ function buildLoadSummary(itemsInput) {
       return { error: 'Itens da carga invalidos.', status: 400 };
     }
 
-    const can = db.prepare('SELECT id, name, volume_cm3 FROM cans WHERE id = ?').get(canId);
+    const can = db.prepare('SELECT id, name, shape, volume_cm3 FROM cans WHERE id = ?').get(canId);
     if (!can) {
       return { error: `Lata ${canId} nao encontrada.`, status: 404 };
     }
@@ -686,6 +1115,7 @@ function buildLoadSummary(itemsInput) {
     breakdown.push({
       canId: can.id,
       canName: can.name,
+      canShape: can.shape,
       quantity,
       unitVolumeCm3: can.volume_cm3,
       totalVolumeCm3: itemVolume
@@ -695,12 +1125,14 @@ function buildLoadSummary(itemsInput) {
   return { totalVolumeCm3, totalCans, breakdown };
 }
 
-function buildTruckOptions(trucks, totalVolumeCm3) {
+function buildTruckOptions(trucks, totalVolumeCm3, unavailableTruckIds = new Set()) {
   return trucks.map((truck) => {
+    const isAvailable = !unavailableTruckIds.has(truck.id);
     const available = truck.volume_cm3 - totalVolumeCm3;
     return {
       ...truck,
-      fits: available >= 0,
+      isAvailable,
+      fits: isAvailable && available >= 0,
       leftoverCm3: available,
       occupancyRate: Number((totalVolumeCm3 / truck.volume_cm3).toFixed(4))
     };
@@ -742,58 +1174,40 @@ function findBestFleetForAutomatic(totalVolumeCm3, trucks) {
   if (!trucks.length) return null;
 
   const sorted = [...trucks].sort((a, b) => b.volume_cm3 - a.volume_cm3);
-  const largestCap = sorted[0].volume_cm3;
-  const minTruckCount = Math.max(2, Math.ceil(totalVolumeCm3 / largestCap));
-  const maxTruckCount = Math.min(18, minTruckCount + 6);
-
-  for (let truckCount = minTruckCount; truckCount <= maxTruckCount; truckCount += 1) {
-    const bestForCount = findBestFleetForTruckCount(totalVolumeCm3, sorted, truckCount);
-    if (bestForCount) {
-      return bestForCount;
-    }
-  }
-
-  return null;
-}
-
-function findBestFleetForTruckCount(totalVolumeCm3, trucksDesc, truckCount) {
   let best = null;
-  const largestCap = trucksDesc[0].volume_cm3;
-  const counts = new Array(trucksDesc.length).fill(0);
 
-  function visit(startIndex, remaining, currentCapacity) {
-    if (remaining === 0) {
-      if (currentCapacity < totalVolumeCm3) return;
+  function visit(index, picked, currentCapacity) {
+    if (currentCapacity >= totalVolumeCm3) {
       const leftoverCm3 = currentCapacity - totalVolumeCm3;
       if (!best || leftoverCm3 < best.leftoverCm3) {
         best = {
           leftoverCm3,
-          allocations: counts
-            .map((quantity, index) => ({ quantity, truck: trucksDesc[index] }))
-            .filter((item) => item.quantity > 0)
-            .map((item) => ({
-              truckId: item.truck.id,
-              name: item.truck.name,
-              quantity: item.quantity,
-              unitVolumeCm3: item.truck.volume_cm3
-            }))
+          allocations: picked.map((truck) => ({
+            truckId: truck.id,
+            name: truck.name,
+            quantity: 1,
+            unitVolumeCm3: truck.volume_cm3
+          }))
         };
       }
       return;
     }
 
-    if (currentCapacity + remaining * largestCap < totalVolumeCm3) return;
+    if (index >= sorted.length) return;
+
+    const maxPossible = currentCapacity + sorted.slice(index).reduce((sum, truck) => sum + truck.volume_cm3, 0);
+    if (maxPossible < totalVolumeCm3) return;
+
     if (best && currentCapacity >= totalVolumeCm3 && currentCapacity - totalVolumeCm3 >= best.leftoverCm3) return;
 
-    for (let i = startIndex; i < trucksDesc.length; i += 1) {
-      const truck = trucksDesc[i];
-      counts[i] += 1;
-      visit(i, remaining - 1, currentCapacity + truck.volume_cm3);
-      counts[i] -= 1;
-    }
+    picked.push(sorted[index]);
+    visit(index + 1, picked, currentCapacity + sorted[index].volume_cm3);
+    picked.pop();
+
+    visit(index + 1, picked, currentCapacity);
   }
 
-  visit(0, truckCount, 0);
+  visit(0, [], 0);
   return best;
 }
 

@@ -22,7 +22,7 @@ Acesse `http://localhost:3000`.
 ## Regras implementadas
 
 - Apenas `admin` cadastra usuarios, latas e caminhoes.
-- Apenas `admin` pode editar e excluir usuarios, latas e caminhoes individualmente.
+- Apenas `admin` pode editar e excluir usuarios, latas e caminhoes individualmente (acoes dentro dos modais de detalhe).
 - Usuarios comuns podem consultar cadastros e usar a calculadora.
 - A calculadora possui selecao de modo: `automatico` ou `manual` (um por vez).
 - No modo `automatico`, se a carga nao couber em 1 caminhao, o sistema distribui em mais de 1.
