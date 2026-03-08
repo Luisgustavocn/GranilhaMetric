@@ -524,6 +524,20 @@ function updateTruck(res, truckId, body) {
 }
 
 function deleteTruck(res, truckId) {
+  const activeReservations = db.prepare(`
+    SELECT COALESCE(SUM(ot.quantity_reserved), 0) AS reserved
+    FROM order_trucks ot
+    INNER JOIN orders o ON o.id = ot.order_id
+    WHERE ot.truck_id = ?
+      AND o.status = 'open'
+  `).get(truckId).reserved;
+
+  if (Number(activeReservations || 0) > 0) {
+    return sendJson(res, 400, {
+      error: `Nao e possivel excluir este caminhao. Existem ${activeReservations} unidade(s) reservada(s) em pedidos abertos.`
+    });
+  }
+
   const result = db.prepare('DELETE FROM trucks WHERE id = ?').run(truckId);
   if (!result.changes) {
     return sendJson(res, 404, { error: 'Caminhao nao encontrado.' });
@@ -1056,7 +1070,7 @@ function calculateLoad(res, body) {
   const mode = String(body?.mode || 'automatic').trim().toLowerCase();
   if (mode === 'manual') {
     return calculateManualLoad(res, body, load, availableTrucks, {
-      allTrucks,
+      allTrucks: [...availability.values()],
       availability,
       unavailableTruckIds,
       startDate: dateRange.startDate,
@@ -1065,7 +1079,7 @@ function calculateLoad(res, body) {
   }
 
   return calculateAutomaticLoad(res, load, availableTrucks, {
-    allTrucks,
+    allTrucks: [...availability.values()],
     availability,
     unavailableTruckIds,
     startDate: dateRange.startDate,

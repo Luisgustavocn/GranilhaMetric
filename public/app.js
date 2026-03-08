@@ -17,7 +17,7 @@ const state = {
   calculationMode: 'automatic',
   manualDistributionType: 'single',
   manualSingleTruckId: null,
-  manualAllocations: [{ id: 1, truckId: null }],
+  manualAllocations: [{ id: 1, truckId: null, quantity: 1 }],
   nextManualAllocationId: 2,
   lastCalculation: null,
   currentView: 'inicio-section',
@@ -318,7 +318,7 @@ function renderHomeOverview() {
   const truckItems = [
     ...state.todayBusyTrucks.slice(0, 3).map((truck) => ({
       title: truck.truck_name,
-      meta: `Indisponivel hoje • Pedido #${truck.order_id}`,
+      meta: `${Number(truck.quantity_reserved || 1)} unidade(s) reservada(s) hoje • Pedido #${truck.order_id}`,
       tone: 'warning'
     })),
     ...state.trucks
@@ -683,7 +683,7 @@ async function openOrderModal(orderId) {
       : '';
 
   const trucksHtml = trucks.length
-    ? `<ul>${trucks.map((truck) => `<li>${escapeHtml(truck.truck_name)}</li>`).join('')}</ul>`
+    ? `<ul>${trucks.map((truck) => `<li>${Number(truck.quantity_reserved || 1)}x ${escapeHtml(truck.truck_name)}</li>`).join('')}</ul>`
     : '<p>Nenhum caminhao vinculado.</p>';
 
   const adminActions =
@@ -890,6 +890,9 @@ function openTruckModal(truckId) {
       <label>Altura interna (cm)
         <input name="heightCm" type="number" min="0.1" step="0.1" value="${Number(truck.height_cm)}" required />
       </label>
+      <label>Quantidade
+        <input name="quantity" type="number" min="1" step="1" value="${Number(truck.quantity || 1)}" required />
+      </label>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">Salvar alteracoes</button>
         <button type="button" id="modal-delete-truck-btn" class="row-action danger">Excluir caminhao</button>
@@ -907,7 +910,8 @@ function openTruckModal(truckId) {
       name: String(formData.get('name') || '').trim(),
       lengthCm: Number(formData.get('lengthCm')),
       widthCm: Number(formData.get('widthCm')),
-      heightCm: Number(formData.get('heightCm'))
+      heightCm: Number(formData.get('heightCm')),
+      quantity: Number(formData.get('quantity'))
     };
     const response = await api(`/api/trucks/${truck.id}`, { method: 'PUT', body: payload });
     if (!response.ok) {
@@ -1208,16 +1212,11 @@ async function onManualMultiSimulation() {
   if (!orderRange) return;
 
   const allocations = state.manualAllocations
-    .map((row) => ({ truckId: Number(row.truckId), quantity: 1 }))
+    .map((row) => ({ truckId: Number(row.truckId), quantity: Number(row.quantity || 1) }))
     .filter((row) => Number.isInteger(row.truckId));
 
   if (!allocations.length) {
     showToast('Adicione pelo menos um caminhao valido.');
-    return;
-  }
-
-  if (new Set(allocations.map((entry) => entry.truckId)).size !== allocations.length) {
-    showToast('Nao repita o mesmo caminhao na distribuicao manual.');
     return;
   }
 
@@ -1246,26 +1245,29 @@ async function onManualMultiSimulation() {
 
 function sanitizeManualSelections() {
   const validTruckIds = new Set(state.trucks.map((truck) => truck.id));
-  const unavailableIds = new Set(state.unavailableTruckIds);
-  const availableTrucks = state.trucks.filter((truck) => !unavailableIds.has(truck.id));
+  const availableTrucks = state.trucks.filter((truck) => getTruckAvailabilityInfo(truck.id).availableQuantity > 0);
   const firstAvailableId = availableTrucks[0]?.id ?? null;
 
-  if (!validTruckIds.has(state.manualSingleTruckId) || unavailableIds.has(state.manualSingleTruckId)) {
+  if (!validTruckIds.has(state.manualSingleTruckId) || getTruckAvailabilityInfo(state.manualSingleTruckId).availableQuantity <= 0) {
     state.manualSingleTruckId = firstAvailableId;
   }
 
-  const used = new Set();
   const sanitized = [];
   for (const row of state.manualAllocations) {
-    const truckIdCandidate = validTruckIds.has(row.truckId) && !unavailableIds.has(row.truckId) ? row.truckId : firstAvailableId;
-    if (!truckIdCandidate || used.has(truckIdCandidate)) continue;
-    used.add(truckIdCandidate);
-    sanitized.push({ id: row.id, truckId: truckIdCandidate });
+    const truckIdCandidate =
+      validTruckIds.has(row.truckId) && getTruckAvailabilityInfo(row.truckId).availableQuantity > 0 ? row.truckId : firstAvailableId;
+    if (!truckIdCandidate) continue;
+    const maxQuantity = Math.max(1, Number(getTruckAvailabilityInfo(truckIdCandidate).availableQuantity || 1));
+    sanitized.push({
+      id: row.id,
+      truckId: truckIdCandidate,
+      quantity: Math.min(Math.max(1, Number(row.quantity || 1)), maxQuantity)
+    });
   }
   state.manualAllocations = sanitized;
 
   if (!state.manualAllocations.length && firstAvailableId) {
-    state.manualAllocations = [{ id: state.nextManualAllocationId++, truckId: firstAvailableId }];
+    state.manualAllocations = [{ id: state.nextManualAllocationId++, truckId: firstAvailableId, quantity: 1 }];
   }
 }
 
@@ -1297,18 +1299,18 @@ function syncCalculationPanels() {
 }
 
 function onAddManualAllocation() {
-  const unavailableIds = new Set(state.unavailableTruckIds);
   const usedTruckIds = new Set(state.manualAllocations.map((entry) => entry.truckId));
-  const candidate = state.trucks.find((truck) => !unavailableIds.has(truck.id) && !usedTruckIds.has(truck.id));
+  const candidate = state.trucks.find((truck) => getTruckAvailabilityInfo(truck.id).availableQuantity > 0 && !usedTruckIds.has(truck.id));
 
   if (!candidate) {
-    showToast('Nao ha mais caminhoes disponiveis para adicionar nessa data.');
+    showToast('Nao ha mais modelos de caminhao disponiveis para adicionar nesse periodo.');
     return;
   }
 
   state.manualAllocations.push({
     id: state.nextManualAllocationId++,
-    truckId: candidate.id
+    truckId: candidate.id,
+    quantity: 1
   });
   state.lastCalculation = null;
   renderManualAllocationRows();
@@ -1316,7 +1318,6 @@ function onAddManualAllocation() {
 
 function renderManualAllocationRows() {
   manualAllocationList.innerHTML = '';
-  const unavailableIds = new Set(state.unavailableTruckIds);
 
   for (const row of state.manualAllocations) {
     const wrapper = document.createElement('div');
@@ -1331,17 +1332,37 @@ function renderManualAllocationRows() {
     for (const truck of state.trucks) {
       const option = document.createElement('option');
       option.value = String(truck.id);
-      const isUnavailable = unavailableIds.has(truck.id);
-      option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)})${isUnavailable ? ' - indisponivel' : ''}`;
+      const availableUnits = Number(getTruckAvailabilityInfo(truck.id).availableQuantity || 0);
+      const totalUnits = Number(getTruckAvailabilityInfo(truck.id).totalQuantity || truck.quantity || 1);
+      const isUnavailable = availableUnits <= 0;
+      option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)}) - ${availableUnits}/${totalUnits} disponivel(is)`;
       option.disabled = isUnavailable || usedByOtherRows.has(truck.id);
       select.appendChild(option);
     }
     select.value = String(row.truckId);
     select.addEventListener('change', () => {
       row.truckId = Number(select.value);
+      row.quantity = 1;
       state.lastCalculation = null;
+      renderManualAllocationRows();
     });
     selectLabel.appendChild(select);
+
+    const quantityLabel = document.createElement('label');
+    quantityLabel.textContent = 'Qtd';
+    const quantityInput = document.createElement('input');
+    quantityInput.type = 'number';
+    quantityInput.min = '1';
+    quantityInput.step = '1';
+    quantityInput.max = String(Math.max(1, Number(getTruckAvailabilityInfo(row.truckId).availableQuantity || 1)));
+    quantityInput.value = String(Math.min(Math.max(1, Number(row.quantity || 1)), Number(quantityInput.max)));
+    quantityInput.addEventListener('input', () => {
+      const max = Math.max(1, Number(getTruckAvailabilityInfo(row.truckId).availableQuantity || 1));
+      row.quantity = Math.min(Math.max(1, Number(quantityInput.value || 1)), max);
+      quantityInput.value = String(row.quantity);
+      state.lastCalculation = null;
+    });
+    quantityLabel.appendChild(quantityInput);
 
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
@@ -1358,6 +1379,7 @@ function renderManualAllocationRows() {
     });
 
     wrapper.appendChild(selectLabel);
+    wrapper.appendChild(quantityLabel);
     wrapper.appendChild(removeBtn);
     manualAllocationList.appendChild(wrapper);
   }
@@ -1392,6 +1414,7 @@ async function syncTruckAvailabilityForRange(showErrorToast) {
   }
 
   state.unavailableTruckIds = Array.isArray(response.data.busyTruckIds) ? response.data.busyTruckIds : [];
+  state.truckAvailabilityById = buildTruckAvailabilityLookup(response.data.availability);
 }
 
 function renderDateAvailabilityHint() {
@@ -1401,14 +1424,15 @@ function renderDateAvailabilityHint() {
     return;
   }
 
-  const busyCount = state.unavailableTruckIds.length;
-  if (!busyCount) {
+  const reservedUnits = state.trucks.reduce((sum, truck) => sum + Number(getTruckAvailabilityInfo(truck.id).reservedQuantity || 0), 0);
+  const unavailableModels = state.unavailableTruckIds.length;
+  if (!reservedUnits) {
     dateAvailabilityHint.textContent = `Todos os caminhoes estao disponiveis entre ${formatDate(range.startDate)} e ${formatDate(range.endDate)}.`;
     return;
   }
 
   dateAvailabilityHint.textContent =
-    `${busyCount} caminhao(es) indisponivel(is) entre ${formatDate(range.startDate)} e ${formatDate(range.endDate)} por pedido em aberto.`;
+    `${reservedUnits} unidade(s) reservada(s) entre ${formatDate(range.startDate)} e ${formatDate(range.endDate)}. ${unavailableModels} modelo(s) sem disponibilidade total.`;
 }
 
 function getSelectedOrderRange(showToastOnError) {
@@ -1767,6 +1791,44 @@ function formatCanDimensions(can) {
   }
 
   return `Alt ${can.height_cm} | Diam ${can.diameter_cm} cm`;
+}
+
+function buildTruckAvailabilityLookup(items) {
+  const list = Array.isArray(items) ? items : [];
+  return Object.fromEntries(
+    list
+      .filter((item) => Number.isInteger(Number(item?.id)))
+      .map((item) => [
+        Number(item.id),
+        {
+          totalQuantity: Number(item.totalQuantity ?? item.quantity ?? 1),
+          reservedQuantity: Number(item.reservedQuantity ?? 0),
+          availableQuantity: Number(item.availableQuantity ?? item.quantity ?? 1)
+        }
+      ])
+  );
+}
+
+function getTruckAvailabilityInfo(truckId) {
+  const fallbackTruck = state.trucks.find((truck) => truck.id === truckId);
+  return (
+    state.truckAvailabilityById?.[truckId] || {
+      totalQuantity: Number(fallbackTruck?.quantity || 0),
+      reservedQuantity: 0,
+      availableQuantity: Number(fallbackTruck?.quantity || 0)
+    }
+  );
+}
+
+function getTodayAvailabilityInfo(truckId) {
+  const fallbackTruck = state.trucks.find((truck) => truck.id === truckId);
+  return (
+    state.todayTruckAvailabilityById?.[truckId] || {
+      totalQuantity: Number(fallbackTruck?.quantity || 0),
+      reservedQuantity: 0,
+      availableQuantity: Number(fallbackTruck?.quantity || 0)
+    }
+  );
 }
 
 function getOrderStartDate(order) {
