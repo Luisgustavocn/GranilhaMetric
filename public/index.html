@@ -147,10 +147,13 @@
                 </table>
 
                 <div class="schedule-row">
-                  <label>Data do pedido
-                    <input id="order-date-input" type="date" required />
+                  <label>Data inicial
+                    <input id="order-start-date-input" type="date" required />
                   </label>
-                  <p id="date-availability-hint" class="hint">Selecione a data para verificar disponibilidade de caminhoes.</p>
+                  <label>Data final
+                    <input id="order-end-date-input" type="date" required />
+                  </label>
+                  <p id="date-availability-hint" class="hint">Selecione o periodo para verificar disponibilidade de caminhoes.</p>
                 </div>
 
                 <div class="calc-mode-switch">
@@ -226,6 +229,7 @@
                       <tr>
                         <th>Nome</th>
                         <th>Dimensoes internas</th>
+                        <th>Qtd</th>
                         <th>Volume total</th>
                       </tr>
                     </thead>
@@ -247,7 +251,7 @@
                       <tr>
                         <th>Pedido</th>
                         <th>Solicitante</th>
-                        <th>Data pedido</th>
+                        <th>Periodo</th>
                         <th>Criado em</th>
                         <th>Total latas</th>
                         <th>Volume</th>
@@ -342,6 +346,9 @@
                     </label>
                     <label>Altura interna (cm)
                       <input name="heightCm" type="number" min="0.1" step="0.1" required />
+                    </label>
+                    <label>Quantidade
+                      <input name="quantity" type="number" min="1" step="1" value="1" required />
                     </label>
                     <button class="btn btn-primary" type="submit">Cadastrar caminhao</button>
                   </form>

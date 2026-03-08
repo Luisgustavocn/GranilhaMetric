@@ -10,8 +10,10 @@ const state = {
   selectedUserId: null,
   selectedOrderId: null,
   unavailableTruckIds: [],
+  truckAvailabilityById: {},
   todayBusyTruckIds: [],
   todayBusyTrucks: [],
+  todayTruckAvailabilityById: {},
   calculationMode: 'automatic',
   manualDistributionType: 'single',
   manualSingleTruckId: null,
@@ -45,7 +47,8 @@ const manualDistributionTypeSelect = document.getElementById('manual-distributio
 const automaticCalcPanel = document.getElementById('automatic-calc-panel');
 const manualCalcPanel = document.getElementById('manual-calc-panel');
 const manualMultiPanel = document.getElementById('manual-multi-panel');
-const orderDateInput = document.getElementById('order-date-input');
+const orderStartDateInput = document.getElementById('order-start-date-input');
+const orderEndDateInput = document.getElementById('order-end-date-input');
 const dateAvailabilityHint = document.getElementById('date-availability-hint');
 
 const canSelect = document.getElementById('can-select');
@@ -92,7 +95,8 @@ function bindEvents() {
   manualMultiCalcBtn.addEventListener('click', onManualMultiSimulation);
   addManualAllocationBtn.addEventListener('click', onAddManualAllocation);
   launchOrderBtn.addEventListener('click', onLaunchOrder);
-  orderDateInput.addEventListener('change', onOrderDateChange);
+  orderStartDateInput.addEventListener('change', onOrderDateChange);
+  orderEndDateInput.addEventListener('change', onOrderDateChange);
   manualDistributionTypeSelect.addEventListener('change', onManualDistributionTypeChange);
   manualTruckSelect.addEventListener('change', () => {
     const selected = Number(manualTruckSelect.value);
@@ -113,7 +117,8 @@ function bindEvents() {
     item.addEventListener('click', () => onSideNavClick(item));
   });
   document.addEventListener('keydown', onGlobalKeydown);
-  orderDateInput.value = getTodayDateIso();
+  orderStartDateInput.value = getTodayDateIso();
+  orderEndDateInput.value = getTodayDateIso();
   syncCalculationPanels();
   syncCanShapeFields();
 }
@@ -165,7 +170,7 @@ async function loadData() {
     api('/api/cans'),
     api('/api/trucks'),
     api('/api/orders'),
-    api(`/api/truck-availability?date=${encodeURIComponent(todayIso)}`)
+    api(`/api/truck-availability?startDate=${encodeURIComponent(todayIso)}&endDate=${encodeURIComponent(todayIso)}`)
   ]);
 
   if (!canRes.ok || !truckRes.ok || !ordersRes.ok) {
@@ -178,8 +183,9 @@ async function loadData() {
   state.orders = ordersRes.data.orders;
   state.todayBusyTruckIds = todayAvailabilityRes.ok ? todayAvailabilityRes.data.busyTruckIds || [] : [];
   state.todayBusyTrucks = todayAvailabilityRes.ok ? todayAvailabilityRes.data.busyTrucks || [] : [];
+  state.todayTruckAvailabilityById = buildTruckAvailabilityLookup(todayAvailabilityRes.ok ? todayAvailabilityRes.data.availability : []);
   state.cargoItems = state.cargoItems.filter((item) => state.cans.some((can) => can.id === item.canId));
-  await syncTruckAvailabilityForDate(false);
+  await syncTruckAvailabilityForRange(false);
   sanitizeManualSelections();
 
   if (state.user?.role === 'admin') {
@@ -198,6 +204,8 @@ function renderLoggedOut() {
   sessionInfo.classList.add('hidden');
   sessionInfo.textContent = '';
   state.unavailableTruckIds = [];
+  state.truckAvailabilityById = {};
+  state.todayTruckAvailabilityById = {};
   state.todayBusyTruckIds = [];
   state.todayBusyTrucks = [];
   state.lastCalculation = null;
@@ -218,11 +226,12 @@ function renderApp() {
   } else {
     adminPanel.classList.add('hidden');
     navAdminItem?.classList.add('hidden');
-    if (document.querySelector('.nav-list li.active')?.dataset.target === 'admin-panel') {
-      setActiveSideNav('inicio-section');
+    if (state.currentView === 'admin-panel') {
+      state.currentView = 'inicio-section';
     }
   }
 
+  renderHomeOverview();
   renderCans();
   renderTrucks();
   renderDateAvailabilityHint();
@@ -230,29 +239,140 @@ function renderApp() {
   renderOrders();
   renderCargoBuilder();
   syncCalculationPanels();
+  setCurrentView(state.currentView);
 }
 
 function onSideNavClick(item) {
   const targetId = item.dataset.target;
   if (!targetId) return;
-  scrollToSection(targetId);
-  setActiveSideNav(targetId);
-}
-
-function scrollToSection(targetId) {
-  const target = document.getElementById(targetId);
-  if (!target) return;
-
-  const topbarHeight = document.querySelector('.topbar')?.offsetHeight || 0;
-  const targetTop = target.getBoundingClientRect().top + window.scrollY;
-  const finalTop = Math.max(0, targetTop - topbarHeight - 10);
-  window.scrollTo({ top: finalTop, behavior: 'smooth' });
+  setCurrentView(targetId);
 }
 
 function setActiveSideNav(targetId) {
   sideNavItems.forEach((entry) => {
     entry.classList.toggle('active', entry.dataset.target === targetId);
   });
+}
+
+function setCurrentView(targetId) {
+  const target = document.getElementById(targetId);
+  if (!target || (targetId === 'admin-panel' && state.user?.role !== 'admin')) {
+    state.currentView = 'inicio-section';
+  } else {
+    state.currentView = targetId;
+  }
+
+  viewPanes.forEach((pane) => {
+    pane.classList.toggle('hidden', pane.id !== state.currentView);
+  });
+  setActiveSideNav(state.currentView);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function renderHomeOverview() {
+  const todayIso = getTodayDateIso();
+  const openOrders = state.orders.filter((order) => order.status === 'open');
+  const completedOrders = state.orders.filter((order) => order.status === 'completed');
+  const ordersToday = state.orders.filter((order) => doesOrderOverlapDate(order, todayIso));
+  const busyTodayCount = state.trucks.reduce((sum, truck) => {
+    const reserved = Number(getTodayAvailabilityInfo(truck.id).reservedQuantity || 0);
+    return sum + reserved;
+  }, 0);
+  const totalTruckUnits = state.trucks.reduce((sum, truck) => sum + Number(truck.quantity || 1), 0);
+  const availableTodayCount = Math.max(0, totalTruckUnits - busyTodayCount);
+  const totalCapacityLiters = state.trucks.reduce((sum, truck) => sum + Number(truck.volume_cm3 || 0) * Number(truck.quantity || 1), 0) / 1000;
+  const openVolumeLiters = openOrders.reduce((sum, order) => sum + Number(order.total_volume_cm3 || 0), 0) / 1000;
+
+  inicioDateLabel.textContent = formatDate(todayIso);
+
+  const stats = [
+    { label: 'Entregas concluidas', value: completedOrders.length, detail: 'Pedidos finalizados no sistema', tone: 'neutral' },
+    { label: 'Pedidos em aberto', value: openOrders.length, detail: 'Demandas aguardando conclusao', tone: 'warning' },
+    { label: 'Caminhoes disponiveis hoje', value: `${availableTodayCount}/${totalTruckUnits}`, detail: `Unidades livres em ${formatDate(todayIso)}`, tone: 'success' },
+    { label: 'Latas cadastradas', value: state.cans.length, detail: 'Modelos ativos para simulacao', tone: 'neutral' },
+    { label: 'Modelos de caminhao', value: state.trucks.length, detail: `${totalTruckUnits} unidade(s) cadastrada(s)`, tone: 'neutral' },
+    { label: state.user?.role === 'admin' ? 'Usuarios ativos' : 'Pedidos para hoje', value: state.user?.role === 'admin' ? state.users.length : ordersToday.length, detail: state.user?.role === 'admin' ? 'Contas cadastradas no sistema' : 'Entregas programadas para hoje', tone: 'accent' }
+  ];
+
+  summaryStats.innerHTML = stats
+    .map((item) => {
+      return `
+        <article class="summary-card tone-${item.tone}">
+          <span class="summary-label">${escapeHtml(item.label)}</span>
+          <strong class="summary-value">${escapeHtml(String(item.value))}</strong>
+          <span class="summary-detail">${escapeHtml(item.detail)}</span>
+        </article>
+      `;
+    })
+    .join('');
+
+  inicioOrdersList.innerHTML = buildOverviewListHtml(
+    state.orders.slice(0, 5).map((order) => ({
+      title: `Pedido #${order.id} • ${order.created_by_name}`,
+      meta: `${formatOrderRange(order)} • ${formatVolume(order.total_volume_cm3)} • ${order.status === 'completed' ? 'Concluido' : 'Aberto'}`,
+      tone: order.status === 'completed' ? 'success' : 'warning'
+    })),
+    'Nenhum pedido cadastrado ainda.'
+  );
+
+  const truckItems = [
+    ...state.todayBusyTrucks.slice(0, 3).map((truck) => ({
+      title: truck.truck_name,
+      meta: `Indisponivel hoje • Pedido #${truck.order_id}`,
+      tone: 'warning'
+    })),
+    ...state.trucks
+      .filter((truck) => Number(getTodayAvailabilityInfo(truck.id).availableQuantity || truck.quantity || 1) > 0)
+      .slice(0, 3)
+      .map((truck) => ({
+        title: truck.name,
+        meta: `${getTodayAvailabilityInfo(truck.id).availableQuantity || truck.quantity || 1} unidade(s) livre(s) hoje • ${formatVolume(truck.volume_cm3)}`,
+        tone: 'success'
+      }))
+  ].slice(0, 6);
+
+  inicioTrucksList.innerHTML = buildOverviewListHtml(truckItems, 'Nenhuma informacao de frota disponivel.');
+
+  const alerts = [
+    `${openOrders.length} pedido(s) em aberto aguardando tratativa.`,
+    `${ordersToday.length} pedido(s) com entrega ativa hoje.`,
+    `${busyTodayCount} unidade(s) de caminhao reservada(s) na operacao de hoje.`,
+    `${openVolumeLiters.toFixed(2)} L em pedidos ainda abertos.`
+  ];
+
+  inicioAlertsList.innerHTML = buildOverviewListHtml(
+    alerts.map((text, index) => ({
+      title: text,
+      meta: index === 0 ? 'Monitoramento operacional' : 'Resumo automatico do sistema',
+      tone: index < 2 ? 'warning' : 'neutral'
+    })),
+    'Sem alertas no momento.'
+  );
+
+  const capacityItems = [
+    { title: `${totalCapacityLiters.toFixed(2)} L`, meta: 'Capacidade total de transporte cadastrada', tone: 'accent' },
+    { title: `${state.cans.length} formatos`, meta: 'Tipos de latas/baldes disponiveis', tone: 'neutral' },
+    { title: `${totalTruckUnits} veiculos`, meta: 'Unidades totais da frota configurada', tone: 'neutral' }
+  ];
+
+  inicioCapacityList.innerHTML = buildOverviewListHtml(capacityItems, 'Sem capacidade cadastrada.');
+}
+
+function buildOverviewListHtml(items, emptyMessage) {
+  if (!items.length) {
+    return `<div class="overview-empty">${escapeHtml(emptyMessage)}</div>`;
+  }
+
+  return items
+    .map((item) => {
+      return `
+        <article class="overview-item tone-${item.tone || 'neutral'}">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>${escapeHtml(item.meta || '')}</span>
+        </article>
+      `;
+    })
+    .join('');
 }
 
 function renderCans() {
@@ -295,7 +415,6 @@ function renderCans() {
 function renderTrucks() {
   trucksBody.innerHTML = '';
   manualTruckSelect.innerHTML = '';
-  const unavailableIds = new Set(state.unavailableTruckIds);
   const hasSelection = state.trucks.some((truck) => truck.id === state.selectedTruckId);
   if (!hasSelection) {
     state.selectedTruckId = state.trucks[0]?.id ?? null;
@@ -305,15 +424,20 @@ function renderTrucks() {
   }
 
   for (const truck of state.trucks) {
-    const isUnavailable = unavailableIds.has(truck.id);
+    const availability = getTruckAvailabilityInfo(truck.id);
+    const availableUnits = Number(availability.availableQuantity ?? truck.quantity ?? 1);
+    const reservedUnits = Number(availability.reservedQuantity || 0);
+    const totalUnits = Number(availability.totalQuantity ?? truck.quantity ?? 1);
+    const isUnavailable = availableUnits <= 0;
     const tr = document.createElement('tr');
     tr.classList.add('selectable-row');
     if (truck.id === state.selectedTruckId) {
       tr.classList.add('selected-row');
     }
     tr.innerHTML = `
-      <td>${escapeHtml(truck.name)}${isUnavailable ? ' <span class="truck-busy-tag">Indisponivel na data</span>' : ''}</td>
+      <td>${escapeHtml(truck.name)}${isUnavailable ? ' <span class="truck-busy-tag">Indisponivel no periodo</span>' : ''}</td>
       <td>${truck.length_cm} x ${truck.width_cm} x ${truck.height_cm} cm</td>
+      <td>${availableUnits}/${totalUnits}</td>
       <td>${formatVolume(truck.volume_cm3)}</td>
     `;
     tr.addEventListener('click', () => {
@@ -326,15 +450,15 @@ function renderTrucks() {
 
     const option = document.createElement('option');
     option.value = String(truck.id);
-    option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)})${isUnavailable ? ' - indisponivel' : ''}`;
+    option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)}) - ${availableUnits}/${totalUnits} disponivel(is)`;
     option.disabled = isUnavailable;
     manualTruckSelect.appendChild(option);
   }
 
-  if (state.manualSingleTruckId && state.trucks.some((truck) => truck.id === state.manualSingleTruckId && !unavailableIds.has(truck.id))) {
+  if (state.manualSingleTruckId && state.trucks.some((truck) => truck.id === state.manualSingleTruckId && getTruckAvailabilityInfo(truck.id).availableQuantity > 0)) {
     manualTruckSelect.value = String(state.manualSingleTruckId);
   } else {
-    const firstAvailable = state.trucks.find((truck) => !unavailableIds.has(truck.id));
+    const firstAvailable = state.trucks.find((truck) => getTruckAvailabilityInfo(truck.id).availableQuantity > 0);
     if (firstAvailable) {
       state.manualSingleTruckId = firstAvailable.id;
       manualTruckSelect.value = String(state.manualSingleTruckId);
@@ -413,7 +537,7 @@ function renderOrders() {
     tr.innerHTML = `
       <td>#${order.id}</td>
       <td>${escapeHtml(order.created_by_name)}</td>
-      <td>${escapeHtml(formatDate(order.scheduled_date))}</td>
+      <td>${escapeHtml(formatOrderRange(order))}</td>
       <td>${escapeHtml(formatDateTime(order.created_at))}</td>
       <td>${order.total_cans}</td>
       <td>${formatVolume(order.total_volume_cm3)}</td>
@@ -478,17 +602,21 @@ async function onLaunchOrder() {
     return;
   }
 
-  const scheduledDate = getSelectedOrderDate(true);
-  if (!scheduledDate) return;
+  const orderRange = getSelectedOrderRange(true);
+  if (!orderRange) return;
 
   if (!state.lastCalculation) {
-    showToast('Calcule a carga para a data selecionada antes de lancar o pedido.');
+    showToast('Calcule a carga para o periodo selecionado antes de lancar o pedido.');
     return;
   }
 
   const currentSignature = buildCargoSignature(state.cargoItems);
-  if (state.lastCalculation.scheduledDate !== scheduledDate || state.lastCalculation.cargoSignature !== currentSignature) {
-    showToast('A carga/data foi alterada. Recalcule antes de lancar o pedido.');
+  if (
+    state.lastCalculation.startDate !== orderRange.startDate ||
+    state.lastCalculation.endDate !== orderRange.endDate ||
+    state.lastCalculation.cargoSignature !== currentSignature
+  ) {
+    showToast('A carga ou o periodo foi alterado. Recalcule antes de lancar o pedido.');
     return;
   }
 
@@ -501,7 +629,8 @@ async function onLaunchOrder() {
     method: 'POST',
     body: {
       items: state.cargoItems,
-      scheduledDate,
+      startDate: orderRange.startDate,
+      endDate: orderRange.endDate,
       allocation: state.lastCalculation.allocation
     }
   });
@@ -570,7 +699,7 @@ async function openOrderModal(orderId) {
   entityModalContent.innerHTML = `
     <p><strong>Status:</strong> ${order.status === 'completed' ? 'Concluido' : 'Aberto'}</p>
     <p><strong>Solicitante:</strong> ${escapeHtml(order.created_by_name)}</p>
-    <p><strong>Data do pedido:</strong> ${escapeHtml(formatDate(order.scheduled_date))}</p>
+    <p><strong>Periodo do pedido:</strong> ${escapeHtml(formatOrderRange(order))}</p>
     <p><strong>Criado em:</strong> ${escapeHtml(formatDateTime(order.created_at))}</p>
     <p><strong>Total de latas:</strong> ${order.total_cans}</p>
     <p><strong>Volume total:</strong> ${formatVolume(order.total_volume_cm3)}</p>
@@ -733,11 +862,13 @@ function openTruckModal(truckId) {
   state.modal = { type: 'truck', id: truck.id };
   entityModalTitle.textContent = 'Detalhes do caminhao';
   const isAdmin = state.user?.role === 'admin';
+  const availability = getTruckAvailabilityInfo(truck.id);
 
   if (!isAdmin) {
     entityModalContent.innerHTML = `
       <p><strong>Nome:</strong> ${escapeHtml(truck.name)}</p>
       <p><strong>Dimensoes internas:</strong> ${truck.length_cm} x ${truck.width_cm} x ${truck.height_cm} cm</p>
+      <p><strong>Quantidade cadastrada:</strong> ${availability.totalQuantity || truck.quantity || 1}</p>
       <p><strong>Volume total:</strong> ${formatVolume(truck.volume_cm3)}</p>
       <p><strong>Cadastrado em:</strong> ${escapeHtml(String(truck.created_at || '-'))}</p>
     `;
@@ -960,7 +1091,8 @@ async function onCreateTruck(event) {
     name: form.get('name'),
     lengthCm: Number(form.get('lengthCm')),
     widthCm: Number(form.get('widthCm')),
-    heightCm: Number(form.get('heightCm'))
+    heightCm: Number(form.get('heightCm')),
+    quantity: Number(form.get('quantity'))
   };
 
   const response = await api('/api/trucks', { method: 'POST', body: payload });
@@ -1006,12 +1138,12 @@ async function onCalculateAutomatic() {
     return;
   }
 
-  const scheduledDate = getSelectedOrderDate(true);
-  if (!scheduledDate) return;
+  const orderRange = getSelectedOrderRange(true);
+  if (!orderRange) return;
 
   const response = await api('/api/calculate', {
     method: 'POST',
-    body: { mode: 'automatic', items: state.cargoItems, scheduledDate }
+    body: { mode: 'automatic', items: state.cargoItems, startDate: orderRange.startDate, endDate: orderRange.endDate }
   });
 
   if (!response.ok) {
@@ -1023,7 +1155,7 @@ async function onCalculateAutomatic() {
 
   resultBox.classList.remove('hidden');
   renderCalculationResult(resultBox, response.data, 'automatic');
-  storeLastCalculation(response.data, scheduledDate);
+  storeLastCalculation(response.data, orderRange);
 }
 
 async function onManualSingleSimulation(event) {
@@ -1034,8 +1166,8 @@ async function onManualSingleSimulation(event) {
     return;
   }
 
-  const scheduledDate = getSelectedOrderDate(true);
-  if (!scheduledDate) return;
+  const orderRange = getSelectedOrderRange(true);
+  if (!orderRange) return;
 
   const truckId = Number(manualTruckSelect.value);
   if (!Number.isInteger(truckId)) {
@@ -1047,7 +1179,8 @@ async function onManualSingleSimulation(event) {
     method: 'POST',
     body: {
       mode: 'manual',
-      scheduledDate,
+      startDate: orderRange.startDate,
+      endDate: orderRange.endDate,
       items: state.cargoItems,
       manual: { type: 'single', truckId }
     }
@@ -1062,7 +1195,7 @@ async function onManualSingleSimulation(event) {
 
   manualResultBox.classList.remove('hidden');
   renderCalculationResult(manualResultBox, response.data, 'manual');
-  storeLastCalculation(response.data, scheduledDate);
+  storeLastCalculation(response.data, orderRange);
 }
 
 async function onManualMultiSimulation() {
@@ -1071,8 +1204,8 @@ async function onManualMultiSimulation() {
     return;
   }
 
-  const scheduledDate = getSelectedOrderDate(true);
-  if (!scheduledDate) return;
+  const orderRange = getSelectedOrderRange(true);
+  if (!orderRange) return;
 
   const allocations = state.manualAllocations
     .map((row) => ({ truckId: Number(row.truckId), quantity: 1 }))
@@ -1092,7 +1225,8 @@ async function onManualMultiSimulation() {
     method: 'POST',
     body: {
       mode: 'manual',
-      scheduledDate,
+      startDate: orderRange.startDate,
+      endDate: orderRange.endDate,
       items: state.cargoItems,
       manual: { type: 'multi', allocations }
     }
@@ -1107,7 +1241,7 @@ async function onManualMultiSimulation() {
 
   manualResultBox.classList.remove('hidden');
   renderCalculationResult(manualResultBox, response.data, 'manual');
-  storeLastCalculation(response.data, scheduledDate);
+  storeLastCalculation(response.data, orderRange);
 }
 
 function sanitizeManualSelections() {
@@ -1231,7 +1365,7 @@ function renderManualAllocationRows() {
 
 async function onOrderDateChange() {
   state.lastCalculation = null;
-  await syncTruckAvailabilityForDate(true);
+  await syncTruckAvailabilityForRange(true);
   sanitizeManualSelections();
   renderTrucks();
   renderDateAvailabilityHint();
@@ -1239,14 +1373,16 @@ async function onOrderDateChange() {
   manualResultBox.classList.add('hidden');
 }
 
-async function syncTruckAvailabilityForDate(showErrorToast) {
-  const date = getSelectedOrderDate(false);
-  if (!date) {
+async function syncTruckAvailabilityForRange(showErrorToast) {
+  const range = getSelectedOrderRange(false);
+  if (!range) {
     state.unavailableTruckIds = [];
     return;
   }
 
-  const response = await api(`/api/truck-availability?date=${encodeURIComponent(date)}`);
+  const response = await api(
+    `/api/truck-availability?startDate=${encodeURIComponent(range.startDate)}&endDate=${encodeURIComponent(range.endDate)}`
+  );
   if (!response.ok) {
     state.unavailableTruckIds = [];
     if (showErrorToast) {
@@ -1259,30 +1395,46 @@ async function syncTruckAvailabilityForDate(showErrorToast) {
 }
 
 function renderDateAvailabilityHint() {
-  const date = getSelectedOrderDate(false);
-  if (!date) {
-    dateAvailabilityHint.textContent = 'Selecione a data para verificar disponibilidade de caminhoes.';
+  const range = getSelectedOrderRange(false);
+  if (!range) {
+    dateAvailabilityHint.textContent = 'Selecione o periodo para verificar disponibilidade de caminhoes.';
     return;
   }
 
   const busyCount = state.unavailableTruckIds.length;
   if (!busyCount) {
-    dateAvailabilityHint.textContent = `Todos os caminhoes estao disponiveis em ${formatDate(date)}.`;
+    dateAvailabilityHint.textContent = `Todos os caminhoes estao disponiveis entre ${formatDate(range.startDate)} e ${formatDate(range.endDate)}.`;
     return;
   }
 
-  dateAvailabilityHint.textContent = `${busyCount} caminhao(es) indisponivel(is) para ${formatDate(date)} por reserva em pedido.`;
+  dateAvailabilityHint.textContent =
+    `${busyCount} caminhao(es) indisponivel(is) entre ${formatDate(range.startDate)} e ${formatDate(range.endDate)} por pedido em aberto.`;
 }
 
-function getSelectedOrderDate(showToastOnError) {
-  const value = String(orderDateInput.value || '').trim();
-  if (!value && showToastOnError) {
-    showToast('Selecione a data do pedido.');
+function getSelectedOrderRange(showToastOnError) {
+  const startDate = String(orderStartDateInput.value || '').trim();
+  const endDate = String(orderEndDateInput.value || '').trim();
+
+  if ((!startDate || !endDate) && showToastOnError) {
+    showToast('Selecione a data inicial e final do pedido.');
+    return null;
   }
-  return value || null;
+
+  if (!startDate || !endDate) {
+    return null;
+  }
+
+  if (startDate > endDate) {
+    if (showToastOnError) {
+      showToast('A data final deve ser maior ou igual a data inicial.');
+    }
+    return null;
+  }
+
+  return { startDate, endDate };
 }
 
-function storeLastCalculation(payload, scheduledDate) {
+function storeLastCalculation(payload, orderRange) {
   const allocation = normalizeAllocationFromPayload(payload);
   if (!allocation) {
     state.lastCalculation = null;
@@ -1290,7 +1442,8 @@ function storeLastCalculation(payload, scheduledDate) {
   }
 
   state.lastCalculation = {
-    scheduledDate,
+    startDate: orderRange.startDate,
+    endDate: orderRange.endDate,
     cargoSignature: buildCargoSignature(state.cargoItems),
     allocation
   };
@@ -1341,12 +1494,18 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
     ? `<p><strong>Sobra de espaco:</strong> ${formatVolume(allocation.leftoverCm3)}</p>`
     : `<p><strong>Carga que ficaria de fora:</strong> ${formatVolume(allocation.missingCm3)}</p>`;
 
-  const scheduledDate = payload?.scheduledDate || getSelectedOrderDate(false);
-  const scheduledDateLine = scheduledDate ? `<p><strong>Data do pedido:</strong> ${escapeHtml(formatDate(scheduledDate))}</p>` : '';
+  const range = {
+    startDate: payload?.startDate || getSelectedOrderRange(false)?.startDate || null,
+    endDate: payload?.endDate || getSelectedOrderRange(false)?.endDate || null
+  };
+  const rangeLine =
+    range.startDate && range.endDate
+      ? `<p><strong>Periodo do pedido:</strong> ${escapeHtml(formatDateRange(range.startDate, range.endDate))}</p>`
+      : '';
 
   targetBox.innerHTML = `
     <h3>${title}</h3>
-    ${scheduledDateLine}
+    ${rangeLine}
     <p><strong>Volume total da carga:</strong> ${formatVolume(payload.totalVolumeCm3 || 0)}</p>
     <p><strong>Capacidade total selecionada:</strong> ${formatVolume(allocation.totalCapacityCm3 || 0)}</p>
     <p><strong>Caminhoes usados:</strong></p>
@@ -1608,6 +1767,33 @@ function formatCanDimensions(can) {
   }
 
   return `Alt ${can.height_cm} | Diam ${can.diameter_cm} cm`;
+}
+
+function getOrderStartDate(order) {
+  return String(order?.start_date || order?.scheduled_date || '').trim() || null;
+}
+
+function getOrderEndDate(order) {
+  return String(order?.end_date || order?.scheduled_date || '').trim() || null;
+}
+
+function doesOrderOverlapDate(order, dateIso) {
+  const startDate = getOrderStartDate(order);
+  const endDate = getOrderEndDate(order);
+  if (!startDate || !endDate || !dateIso) return false;
+  return startDate <= dateIso && endDate >= dateIso;
+}
+
+function formatDateRange(startDate, endDate) {
+  if (!startDate && !endDate) return '-';
+  if (startDate && endDate && startDate === endDate) {
+    return formatDate(startDate);
+  }
+  return `${formatDate(startDate)} ate ${formatDate(endDate)}`;
+}
+
+function formatOrderRange(order) {
+  return formatDateRange(getOrderStartDate(order), getOrderEndDate(order));
 }
 
 function formatDate(value) {

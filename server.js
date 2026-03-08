@@ -65,6 +65,7 @@ function initDb() {
       length_cm REAL NOT NULL,
       width_cm REAL NOT NULL,
       height_cm REAL NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
       volume_cm3 REAL NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -74,6 +75,8 @@ function initDb() {
       created_by_user_id INTEGER NOT NULL,
       created_by_name TEXT NOT NULL,
       scheduled_date TEXT,
+      start_date TEXT,
+      end_date TEXT,
       status TEXT NOT NULL CHECK(status IN ('open', 'completed')) DEFAULT 'open',
       total_cans INTEGER NOT NULL,
       total_volume_cm3 REAL NOT NULL,
@@ -98,7 +101,8 @@ function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_id INTEGER NOT NULL,
       truck_id INTEGER NOT NULL,
-      truck_name TEXT NOT NULL
+      truck_name TEXT NOT NULL,
+      quantity_reserved INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
@@ -128,12 +132,12 @@ function initDb() {
     ];
 
     const insertTruck = db.prepare(`
-      INSERT INTO trucks (name, length_cm, width_cm, height_cm, volume_cm3)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO trucks (name, length_cm, width_cm, height_cm, quantity, volume_cm3)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
     for (const [name, l, w, h] of seedTrucks) {
-      insertTruck.run(name, l, w, h, l * w * h);
+      insertTruck.run(name, l, w, h, 1, l * w * h);
     }
   }
 
@@ -154,13 +158,50 @@ function initDb() {
 function ensureOrderSchemaCompatibility() {
   const orderColumns = db.prepare('PRAGMA table_info(orders)').all();
   const hasScheduledDate = orderColumns.some((column) => column.name === 'scheduled_date');
+  const hasStartDate = orderColumns.some((column) => column.name === 'start_date');
+  const hasEndDate = orderColumns.some((column) => column.name === 'end_date');
 
   if (!hasScheduledDate) {
     db.exec('ALTER TABLE orders ADD COLUMN scheduled_date TEXT;');
     db.exec("UPDATE orders SET scheduled_date = date(created_at) WHERE scheduled_date IS NULL OR scheduled_date = '';");
   }
 
+  if (!hasStartDate) {
+    db.exec('ALTER TABLE orders ADD COLUMN start_date TEXT;');
+  }
+
+  if (!hasEndDate) {
+    db.exec('ALTER TABLE orders ADD COLUMN end_date TEXT;');
+  }
+
+  db.exec(`
+    UPDATE orders
+    SET start_date = COALESCE(NULLIF(start_date, ''), NULLIF(scheduled_date, ''), date(created_at))
+    WHERE start_date IS NULL OR start_date = '';
+  `);
+  db.exec(`
+    UPDATE orders
+    SET end_date = COALESCE(NULLIF(end_date, ''), NULLIF(scheduled_date, ''), date(created_at))
+    WHERE end_date IS NULL OR end_date = '';
+  `);
+
   db.exec('CREATE INDEX IF NOT EXISTS idx_orders_scheduled_date ON orders(scheduled_date);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_orders_start_date ON orders(start_date);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_orders_end_date ON orders(end_date);');
+
+  const truckColumns = db.prepare('PRAGMA table_info(trucks)').all();
+  const hasTruckQuantity = truckColumns.some((column) => column.name === 'quantity');
+  if (!hasTruckQuantity) {
+    db.exec('ALTER TABLE trucks ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1;');
+    db.exec("UPDATE trucks SET quantity = 1 WHERE quantity IS NULL OR quantity <= 0;");
+  }
+
+  const orderTruckColumns = db.prepare('PRAGMA table_info(order_trucks)').all();
+  const hasReservedQuantity = orderTruckColumns.some((column) => column.name === 'quantity_reserved');
+  if (!hasReservedQuantity) {
+    db.exec('ALTER TABLE order_trucks ADD COLUMN quantity_reserved INTEGER NOT NULL DEFAULT 1;');
+    db.exec("UPDATE order_trucks SET quantity_reserved = 1 WHERE quantity_reserved IS NULL OR quantity_reserved <= 0;");
+  }
 }
 
 async function handleApi(req, res, url) {
@@ -283,7 +324,12 @@ async function handleApi(req, res, url) {
   if (method === 'GET' && url.pathname === '/api/truck-availability') {
     const user = requireAuth(req, res);
     if (!user) return;
-    return getTruckAvailability(res, url.searchParams.get('date'));
+    const fallbackDate = url.searchParams.get('date');
+    return getTruckAvailability(
+      res,
+      url.searchParams.get('startDate') || fallbackDate,
+      url.searchParams.get('endDate') || fallbackDate
+    );
   }
 
   if (orderIdMatch && method === 'GET') {
@@ -411,17 +457,23 @@ function createTruck(res, body) {
   const lengthCm = Number(body?.lengthCm);
   const widthCm = Number(body?.widthCm);
   const heightCm = Number(body?.heightCm);
+  const quantity = Number(body?.quantity ?? 1);
 
-  if (!name || ![lengthCm, widthCm, heightCm].every((value) => Number.isFinite(value) && value > 0)) {
-    return sendJson(res, 400, { error: 'Nome e medidas validas do caminhao sao obrigatorios.' });
+  if (
+    !name ||
+    ![lengthCm, widthCm, heightCm].every((value) => Number.isFinite(value) && value > 0) ||
+    !Number.isInteger(quantity) ||
+    quantity <= 0
+  ) {
+    return sendJson(res, 400, { error: 'Nome, medidas validas e quantidade inteira do caminhao sao obrigatorios.' });
   }
 
   const volumeCm3 = lengthCm * widthCm * heightCm;
 
   db.prepare(`
-    INSERT INTO trucks (name, length_cm, width_cm, height_cm, volume_cm3)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(name, lengthCm, widthCm, heightCm, volumeCm3);
+    INSERT INTO trucks (name, length_cm, width_cm, height_cm, quantity, volume_cm3)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(name, lengthCm, widthCm, heightCm, quantity, volumeCm3);
 
   sendJson(res, 201, { ok: true });
 }
@@ -436,18 +488,37 @@ function updateTruck(res, truckId, body) {
   const lengthCm = Number(body?.lengthCm ?? existing.length_cm);
   const widthCm = Number(body?.widthCm ?? existing.width_cm);
   const heightCm = Number(body?.heightCm ?? existing.height_cm);
+  const quantity = Number(body?.quantity ?? existing.quantity ?? 1);
 
-  if (!name || ![lengthCm, widthCm, heightCm].every((value) => Number.isFinite(value) && value > 0)) {
-    return sendJson(res, 400, { error: 'Nome e medidas validas do caminhao sao obrigatorios.' });
+  if (
+    !name ||
+    ![lengthCm, widthCm, heightCm].every((value) => Number.isFinite(value) && value > 0) ||
+    !Number.isInteger(quantity) ||
+    quantity <= 0
+  ) {
+    return sendJson(res, 400, { error: 'Nome, medidas validas e quantidade inteira do caminhao sao obrigatorios.' });
   }
 
   const volumeCm3 = lengthCm * widthCm * heightCm;
+  const activeReservations = db.prepare(`
+    SELECT COALESCE(SUM(quantity_reserved), 0) AS reserved
+    FROM order_trucks ot
+    INNER JOIN orders o ON o.id = ot.order_id
+    WHERE ot.truck_id = ?
+      AND o.status = 'open'
+  `).get(truckId).reserved;
+
+  if (quantity < Number(activeReservations || 0)) {
+    return sendJson(res, 400, {
+      error: `Nao e possivel reduzir a quantidade para ${quantity}. Existem ${activeReservations} unidade(s) desse caminhao em pedidos abertos.`
+    });
+  }
 
   db.prepare(`
     UPDATE trucks
-    SET name = ?, length_cm = ?, width_cm = ?, height_cm = ?, volume_cm3 = ?
+    SET name = ?, length_cm = ?, width_cm = ?, height_cm = ?, quantity = ?, volume_cm3 = ?
     WHERE id = ?
-  `).run(name, lengthCm, widthCm, heightCm, volumeCm3, truckId);
+  `).run(name, lengthCm, widthCm, heightCm, quantity, volumeCm3, truckId);
 
   sendJson(res, 200, { ok: true });
 }
@@ -556,6 +627,8 @@ function listOrders(res) {
       created_by_user_id,
       created_by_name,
       scheduled_date,
+      start_date,
+      end_date,
       status,
       total_cans,
       total_volume_cm3,
@@ -576,23 +649,17 @@ function createOrder(currentUser, res, body) {
     return sendJson(res, load.status || 400, { error: load.error });
   }
 
-  const parsedDate = parseScheduledDate(body?.scheduledDate);
-  if (parsedDate.error) {
-    return sendJson(res, 400, { error: parsedDate.error });
+  const fallbackDate = body?.scheduledDate;
+  const dateRange = parseDateRange(body?.startDate || fallbackDate, body?.endDate || fallbackDate);
+  if (dateRange.error) {
+    return sendJson(res, 400, { error: dateRange.error });
   }
 
-  const parsedSelection = parseOrderTruckSelection(body?.allocation?.trucks, load.totalVolumeCm3);
+  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate);
+  const parsedSelection = parseOrderTruckSelection(body?.allocation?.trucks, load.totalVolumeCm3, availability);
   if (parsedSelection.error) {
     return sendJson(res, 400, { error: parsedSelection.error });
-  }
-
-  const unavailableTruckIds = getUnavailableTruckIdsForDate(parsedDate.value);
-  const conflictedTrucks = parsedSelection.allocations.filter((entry) => unavailableTruckIds.has(entry.truckId));
-  if (conflictedTrucks.length) {
-    const truckNames = conflictedTrucks.map((entry) => entry.name).join(', ');
-    return sendJson(res, 409, {
-      error: `Os seguintes caminhoes ja estao reservados para ${parsedDate.value}: ${truckNames}.`
-    });
   }
 
   const allocationCheck = buildAllocationResult(load.totalVolumeCm3, parsedSelection.allocations);
@@ -608,11 +675,21 @@ function createOrder(currentUser, res, body) {
         created_by_user_id,
         created_by_name,
         scheduled_date,
+        start_date,
+        end_date,
         status,
         total_cans,
         total_volume_cm3
-      ) VALUES (?, ?, ?, 'open', ?, ?)
-    `).run(currentUser.id, currentUser.name, parsedDate.value, load.totalCans, load.totalVolumeCm3);
+      ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+    `).run(
+      currentUser.id,
+      currentUser.name,
+      dateRange.startDate,
+      dateRange.startDate,
+      dateRange.endDate,
+      load.totalCans,
+      load.totalVolumeCm3
+    );
 
     const orderId = Number(orderResult.lastInsertRowid);
     const insertItem = db.prepare(`
@@ -640,11 +717,11 @@ function createOrder(currentUser, res, body) {
     }
 
     const insertOrderTruck = db.prepare(`
-      INSERT INTO order_trucks (order_id, truck_id, truck_name)
-      VALUES (?, ?, ?)
+      INSERT INTO order_trucks (order_id, truck_id, truck_name, quantity_reserved)
+      VALUES (?, ?, ?, ?)
     `);
     for (const allocation of parsedSelection.allocations) {
-      insertOrderTruck.run(orderId, allocation.truckId, allocation.name);
+      insertOrderTruck.run(orderId, allocation.truckId, allocation.name, allocation.quantity);
     }
 
     db.exec('COMMIT');
@@ -663,6 +740,8 @@ function getOrderDetails(res, orderId) {
       created_by_user_id,
       created_by_name,
       scheduled_date,
+      start_date,
+      end_date,
       status,
       total_cans,
       total_volume_cm3,
@@ -696,7 +775,8 @@ function getOrderDetails(res, orderId) {
   const trucks = db.prepare(`
     SELECT
       truck_id,
-      truck_name
+      truck_name,
+      quantity_reserved
     FROM order_trucks
     WHERE order_id = ?
     ORDER BY truck_name ASC
@@ -747,67 +827,111 @@ function deleteOrder(res, orderId) {
   }
 }
 
-function getTruckAvailability(res, scheduledDateRaw) {
-  const parsedDate = parseScheduledDate(scheduledDateRaw);
-  if (parsedDate.error) {
-    return sendJson(res, 400, { error: parsedDate.error });
+function getTruckAvailability(res, startDateRaw, endDateRaw) {
+  const dateRange = parseDateRange(startDateRaw, endDateRaw);
+  if (dateRange.error) {
+    return sendJson(res, 400, { error: dateRange.error });
   }
 
-  const busyRows = getUnavailableTruckRowsForDate(parsedDate.value);
-  const busyTruckIds = [...new Set(busyRows.map((row) => row.truck_id))];
+  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+  const busyRows = getUnavailableTruckRowsForRange(dateRange.startDate, dateRange.endDate);
+  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate);
+  const busyTruckIds = [...availability.values()]
+    .filter((item) => item.availableQuantity <= 0)
+    .map((item) => item.id);
 
   sendJson(res, 200, {
-    date: parsedDate.value,
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
     busyTruckIds,
-    busyTrucks: busyRows
+    busyTrucks: busyRows,
+    availability: [...availability.values()]
   });
 }
 
-function parseScheduledDate(value) {
+function parseDateValue(value, label) {
   const date = String(value || '').trim();
   if (!date) {
-    return { error: 'Informe a data do pedido.' };
+    return { error: `Informe a ${label}.` };
   }
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return { error: 'Data do pedido invalida. Use o formato YYYY-MM-DD.' };
+    return { error: `${label} invalida. Use o formato YYYY-MM-DD.` };
   }
 
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
-    return { error: 'Data do pedido invalida.' };
+    return { error: `${label} invalida.` };
   }
 
   return { value: date };
 }
 
-function getUnavailableTruckRowsForDate(scheduledDate) {
+function parseDateRange(startValue, endValue) {
+  const startDate = parseDateValue(startValue, 'data inicial');
+  if (startDate.error) return startDate;
+
+  const endDate = parseDateValue(endValue, 'data final');
+  if (endDate.error) return endDate;
+
+  if (startDate.value > endDate.value) {
+    return { error: 'A data final deve ser maior ou igual a data inicial.' };
+  }
+
+  return {
+    startDate: startDate.value,
+    endDate: endDate.value
+  };
+}
+
+function getUnavailableTruckRowsForRange(startDate, endDate) {
   return db.prepare(`
     SELECT
       ot.truck_id,
       ot.truck_name,
       ot.order_id,
-      o.status
+      ot.quantity_reserved,
+      o.status,
+      o.start_date,
+      o.end_date
     FROM order_trucks ot
     INNER JOIN orders o ON o.id = ot.order_id
-    WHERE o.scheduled_date = ?
+    WHERE o.status = 'open'
+      AND o.start_date <= ?
+      AND o.end_date >= ?
     ORDER BY ot.truck_name ASC
-  `).all(scheduledDate);
+  `).all(endDate, startDate);
 }
 
-function getUnavailableTruckIdsForDate(scheduledDate) {
-  const rows = getUnavailableTruckRowsForDate(scheduledDate);
+function getUnavailableTruckIdsForRange(startDate, endDate) {
+  const rows = getUnavailableTruckRowsForRange(startDate, endDate);
   return new Set(rows.map((row) => row.truck_id));
 }
 
-function parseOrderTruckSelection(rawTrucks, totalVolumeCm3) {
+function buildTruckAvailabilityMap(trucks, startDate, endDate) {
+  const reservedRows = startDate && endDate ? getUnavailableTruckRowsForRange(startDate, endDate) : [];
+  const reservedByTruckId = new Map();
+  for (const row of reservedRows) {
+    reservedByTruckId.set(row.truck_id, (reservedByTruckId.get(row.truck_id) || 0) + Number(row.quantity_reserved || 1));
+  }
+
+  return new Map(
+    trucks.map((truck) => {
+      const totalQuantity = Number(truck.quantity || 1);
+      const reservedQuantity = reservedByTruckId.get(truck.id) || 0;
+      const availableQuantity = Math.max(0, totalQuantity - reservedQuantity);
+      return [truck.id, { ...truck, totalQuantity, reservedQuantity, availableQuantity }];
+    })
+  );
+}
+
+function parseOrderTruckSelection(rawTrucks, totalVolumeCm3, availability = new Map()) {
   const trucks = Array.isArray(rawTrucks) ? rawTrucks : [];
   if (!trucks.length) {
     return { error: 'Calcule a carga e selecione os caminhoes antes de lancar o pedido.' };
   }
 
-  const selected = [];
-  const usedTruckIds = new Set();
+  const selectedByTruckId = new Map();
 
   for (const item of trucks) {
     const truckId = Number(item?.truckId);
@@ -816,28 +940,28 @@ function parseOrderTruckSelection(rawTrucks, totalVolumeCm3) {
       return { error: 'Selecao de caminhoes invalida.' };
     }
 
-    if (quantity !== 1) {
-      return { error: 'Cada caminhao pode ser usado apenas uma vez por pedido.' };
-    }
-
-    if (usedTruckIds.has(truckId)) {
-      return { error: 'Nao repita o mesmo caminhao na selecao do pedido.' };
-    }
-
-    const truck = db.prepare('SELECT id, name, volume_cm3 FROM trucks WHERE id = ?').get(truckId);
+    const truck = availability.get(truckId) || db.prepare('SELECT id, name, volume_cm3, quantity FROM trucks WHERE id = ?').get(truckId);
     if (!truck) {
       return { error: `Caminhao ${truckId} nao encontrado.` };
     }
 
-    usedTruckIds.add(truckId);
-    selected.push({
+    const nextQuantity = (selectedByTruckId.get(truckId)?.quantity || 0) + quantity;
+    const availableQuantity = Number(truck.availableQuantity ?? truck.quantity ?? 1);
+    if (nextQuantity > availableQuantity) {
+      return {
+        error: `O caminhao "${truck.name}" possui apenas ${availableQuantity} unidade(s) disponivel(is) para esse periodo.`
+      };
+    }
+
+    selectedByTruckId.set(truckId, {
       truckId: truck.id,
       name: truck.name,
-      quantity: 1,
+      quantity: nextQuantity,
       unitVolumeCm3: truck.volume_cm3
     });
   }
 
+  const selected = [...selectedByTruckId.values()];
   const allocation = buildAllocationResult(totalVolumeCm3, selected);
   return { allocations: selected, allocation };
 }
@@ -904,18 +1028,27 @@ function calculateLoad(res, body) {
     return sendJson(res, 422, { error: 'Nao ha caminhoes cadastrados para calcular a carga.' });
   }
 
-  const hasScheduledDate = body?.scheduledDate !== undefined && body?.scheduledDate !== null && String(body?.scheduledDate).trim() !== '';
-  const scheduledDate = hasScheduledDate ? parseScheduledDate(body?.scheduledDate) : { value: null };
-  if (scheduledDate.error) {
-    return sendJson(res, 400, { error: scheduledDate.error });
+  const fallbackDate = body?.scheduledDate;
+  const hasDateRange =
+    (body?.startDate !== undefined && body?.startDate !== null && String(body?.startDate).trim() !== '') ||
+    (body?.endDate !== undefined && body?.endDate !== null && String(body?.endDate).trim() !== '') ||
+    (fallbackDate !== undefined && fallbackDate !== null && String(fallbackDate).trim() !== '');
+  const dateRange = hasDateRange
+    ? parseDateRange(body?.startDate || fallbackDate, body?.endDate || fallbackDate)
+    : { startDate: null, endDate: null };
+  if (dateRange.error) {
+    return sendJson(res, 400, { error: dateRange.error });
   }
 
-  const unavailableTruckIds = scheduledDate.value ? getUnavailableTruckIdsForDate(scheduledDate.value) : new Set();
-  const availableTrucks = allTrucks.filter((truck) => !unavailableTruckIds.has(truck.id));
+  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate);
+  const unavailableTruckIds = new Set(
+    [...availability.values()].filter((truck) => truck.availableQuantity <= 0).map((truck) => truck.id)
+  );
+  const availableTrucks = [...availability.values()].filter((truck) => truck.availableQuantity > 0);
   if (!availableTrucks.length) {
     return sendJson(res, 422, {
-      error: scheduledDate.value
-        ? `Nao ha caminhoes disponiveis para a data ${scheduledDate.value}.`
+      error: dateRange.startDate
+        ? `Nao ha caminhoes disponiveis entre ${dateRange.startDate} e ${dateRange.endDate}.`
         : 'Nao ha caminhoes cadastrados para calcular a carga.'
     });
   }
@@ -924,15 +1057,19 @@ function calculateLoad(res, body) {
   if (mode === 'manual') {
     return calculateManualLoad(res, body, load, availableTrucks, {
       allTrucks,
+      availability,
       unavailableTruckIds,
-      scheduledDate: scheduledDate.value
+      startDate: dateRange.startDate,
+      endDate: dateRange.endDate
     });
   }
 
   return calculateAutomaticLoad(res, load, availableTrucks, {
     allTrucks,
+    availability,
     unavailableTruckIds,
-    scheduledDate: scheduledDate.value
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate
   });
 }
 
@@ -955,7 +1092,8 @@ function calculateAutomaticLoad(res, load, trucks, context = {}) {
     return sendJson(res, 200, {
       mode: 'automatic',
       strategy: 'single',
-      scheduledDate: context.scheduledDate || null,
+      startDate: context.startDate || null,
+      endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -968,7 +1106,8 @@ function calculateAutomaticLoad(res, load, trucks, context = {}) {
   if (!fleet) {
     return sendJson(res, 422, {
       error: 'Nao foi possivel encontrar combinacao de caminhoes para comportar a carga.',
-      scheduledDate: context.scheduledDate || null,
+      startDate: context.startDate || null,
+      endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -981,7 +1120,8 @@ function calculateAutomaticLoad(res, load, trucks, context = {}) {
   return sendJson(res, 200, {
     mode: 'automatic',
     strategy: 'multi',
-    scheduledDate: context.scheduledDate || null,
+    startDate: context.startDate || null,
+    endDate: context.endDate || null,
     totalVolumeCm3: load.totalVolumeCm3,
     totalCans: load.totalCans,
     breakdown: load.breakdown,
@@ -1001,9 +1141,11 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
 
     const truck = trucks.find((entry) => entry.id === truckId);
     if (!truck) {
-      const unavailableTruck = (context.allTrucks || []).find((entry) => entry.id === truckId);
-      if (unavailableTruck && (context.unavailableTruckIds || new Set()).has(truckId) && context.scheduledDate) {
-        return sendJson(res, 409, { error: `O caminhao "${unavailableTruck.name}" ja esta reservado para ${context.scheduledDate}.` });
+      const unavailableTruck = (context.availability || new Map()).get(truckId) || (context.allTrucks || []).find((entry) => entry.id === truckId);
+      if (unavailableTruck && Number(unavailableTruck.availableQuantity || 0) <= 0 && context.startDate && context.endDate) {
+        return sendJson(res, 409, {
+          error: `O caminhao "${unavailableTruck.name}" nao possui unidades disponiveis entre ${context.startDate} e ${context.endDate}.`
+        });
       }
       return sendJson(res, 404, { error: 'Caminhao selecionado nao encontrado.' });
     }
@@ -1020,7 +1162,8 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
     return sendJson(res, 200, {
       mode: 'manual',
       strategy: 'single',
-      scheduledDate: context.scheduledDate || null,
+      startDate: context.startDate || null,
+      endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -1041,33 +1184,32 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
       if (!Number.isInteger(truckId) || !Number.isInteger(quantity) || quantity <= 0) {
         return sendJson(res, 400, { error: 'Distribuicao manual invalida. Verifique os caminhoes selecionados.' });
       }
-
-      if (quantity !== 1) {
-        return sendJson(res, 400, { error: 'Cada caminhao pode ser usado apenas uma vez por pedido.' });
-      }
-
-      if (byTruckId.has(truckId)) {
-        return sendJson(res, 400, { error: 'Nao repita o mesmo caminhao na distribuicao manual.' });
-      }
-
-      byTruckId.set(truckId, quantity);
+      byTruckId.set(truckId, (byTruckId.get(truckId) || 0) + quantity);
     }
 
     const allocations = [];
     for (const [truckId, quantity] of byTruckId.entries()) {
       const truck = trucks.find((entry) => entry.id === truckId);
       if (!truck) {
-        const unavailableTruck = (context.allTrucks || []).find((entry) => entry.id === truckId);
-        if (unavailableTruck && (context.unavailableTruckIds || new Set()).has(truckId) && context.scheduledDate) {
-          return sendJson(res, 409, { error: `O caminhao "${unavailableTruck.name}" ja esta reservado para ${context.scheduledDate}.` });
+        const unavailableTruck = (context.availability || new Map()).get(truckId) || (context.allTrucks || []).find((entry) => entry.id === truckId);
+        if (unavailableTruck && Number(unavailableTruck.availableQuantity || 0) <= 0 && context.startDate && context.endDate) {
+          return sendJson(res, 409, {
+            error: `O caminhao "${unavailableTruck.name}" nao possui unidades disponiveis entre ${context.startDate} e ${context.endDate}.`
+          });
         }
         return sendJson(res, 404, { error: `Caminhao ${truckId} nao encontrado.` });
+      }
+
+      if (quantity > Number(truck.availableQuantity || 0)) {
+        return sendJson(res, 409, {
+          error: `O caminhao "${truck.name}" possui apenas ${truck.availableQuantity} unidade(s) disponivel(is) para esse periodo.`
+        });
       }
 
       allocations.push({
         truckId: truck.id,
         name: truck.name,
-        quantity: 1,
+        quantity,
         unitVolumeCm3: truck.volume_cm3
       });
     }
@@ -1076,7 +1218,8 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
     return sendJson(res, 200, {
       mode: 'manual',
       strategy: 'multi',
-      scheduledDate: context.scheduledDate || null,
+      startDate: context.startDate || null,
+      endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
@@ -1127,10 +1270,16 @@ function buildLoadSummary(itemsInput) {
 
 function buildTruckOptions(trucks, totalVolumeCm3, unavailableTruckIds = new Set()) {
   return trucks.map((truck) => {
-    const isAvailable = !unavailableTruckIds.has(truck.id);
+    const availableQuantity = Number(truck.availableQuantity ?? truck.quantity ?? (unavailableTruckIds.has(truck.id) ? 0 : 1));
+    const totalQuantity = Number(truck.totalQuantity ?? truck.quantity ?? 1);
+    const reservedQuantity = Number(truck.reservedQuantity ?? Math.max(0, totalQuantity - availableQuantity));
+    const isAvailable = availableQuantity > 0 && !unavailableTruckIds.has(truck.id);
     const available = truck.volume_cm3 - totalVolumeCm3;
     return {
       ...truck,
+      totalQuantity,
+      reservedQuantity,
+      availableQuantity,
       isAvailable,
       fits: isAvailable && available >= 0,
       leftoverCm3: available,
@@ -1173,24 +1322,42 @@ function buildAllocationResult(totalVolumeCm3, allocationsInput) {
 function findBestFleetForAutomatic(totalVolumeCm3, trucks) {
   if (!trucks.length) return null;
 
-  const sorted = [...trucks].sort((a, b) => b.volume_cm3 - a.volume_cm3);
+  const sorted = [...trucks]
+    .flatMap((truck) =>
+      Array.from({ length: Math.max(0, Number(truck.availableQuantity || truck.quantity || 0)) }, () => ({
+        id: truck.id,
+        name: truck.name,
+        volume_cm3: Number(truck.volume_cm3)
+      }))
+    )
+    .sort((a, b) => b.volume_cm3 - a.volume_cm3);
+  if (!sorted.length) return null;
   let best = null;
 
   function visit(index, picked, currentCapacity) {
-    if (currentCapacity >= totalVolumeCm3) {
-      const leftoverCm3 = currentCapacity - totalVolumeCm3;
-      if (!best || leftoverCm3 < best.leftoverCm3) {
-        best = {
-          leftoverCm3,
-          allocations: picked.map((truck) => ({
-            truckId: truck.id,
-            name: truck.name,
-            quantity: 1,
-            unitVolumeCm3: truck.volume_cm3
-          }))
-        };
-      }
-      return;
+      if (currentCapacity >= totalVolumeCm3) {
+        const leftoverCm3 = currentCapacity - totalVolumeCm3;
+        if (!best || leftoverCm3 < best.leftoverCm3) {
+          const grouped = new Map();
+          for (const truck of picked) {
+            const existing = grouped.get(truck.id);
+            if (existing) {
+              existing.quantity += 1;
+            } else {
+              grouped.set(truck.id, {
+                truckId: truck.id,
+                name: truck.name,
+                quantity: 1,
+                unitVolumeCm3: truck.volume_cm3
+              });
+            }
+          }
+          best = {
+            leftoverCm3,
+            allocations: [...grouped.values()]
+          };
+        }
+        return;
     }
 
     if (index >= sorted.length) return;
