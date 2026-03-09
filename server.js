@@ -364,7 +364,7 @@ async function handleApi(req, res, url) {
     return calculateLoad(res, body);
   }
 
-  sendJson(res, 404, { error: 'Rota nao encontrada.' });
+  sendJson(res, 404, { error: 'Rota não encontrada.' });
 }
 
 function login(res, body) {
@@ -422,7 +422,7 @@ function createCan(res, body) {
 function updateCan(res, canId, body) {
   const existing = db.prepare('SELECT * FROM cans WHERE id = ?').get(canId);
   if (!existing) {
-    return sendJson(res, 404, { error: 'Lata nao encontrada.' });
+    return sendJson(res, 404, { error: 'Lata não encontrada.' });
   }
 
   const mergedBody = {
@@ -453,7 +453,7 @@ function updateCan(res, canId, body) {
 function deleteCan(res, canId) {
   const result = db.prepare('DELETE FROM cans WHERE id = ?').run(canId);
   if (!result.changes) {
-    return sendJson(res, 404, { error: 'Lata nao encontrada.' });
+    return sendJson(res, 404, { error: 'Lata não encontrada.' });
   }
 
   sendJson(res, 200, { ok: true });
@@ -472,7 +472,7 @@ function createTruck(res, body) {
     !Number.isInteger(quantity) ||
     quantity <= 0
   ) {
-    return sendJson(res, 400, { error: 'Nome, medidas validas e quantidade inteira do caminhao sao obrigatorios.' });
+    return sendJson(res, 400, { error: 'Nome, medidas válidas e quantidade inteira do caminhão são obrigatórios.' });
   }
 
   const volumeCm3 = lengthCm * widthCm * heightCm;
@@ -488,7 +488,7 @@ function createTruck(res, body) {
 function updateTruck(res, truckId, body) {
   const existing = db.prepare('SELECT * FROM trucks WHERE id = ?').get(truckId);
   if (!existing) {
-    return sendJson(res, 404, { error: 'Caminhao nao encontrado.' });
+    return sendJson(res, 404, { error: 'Caminhão não encontrado.' });
   }
 
   const name = String(body?.name ?? existing.name).trim();
@@ -503,7 +503,7 @@ function updateTruck(res, truckId, body) {
     !Number.isInteger(quantity) ||
     quantity <= 0
   ) {
-    return sendJson(res, 400, { error: 'Nome, medidas validas e quantidade inteira do caminhao sao obrigatorios.' });
+    return sendJson(res, 400, { error: 'Nome, medidas válidas e quantidade inteira do caminhão são obrigatórios.' });
   }
 
   const volumeCm3 = lengthCm * widthCm * heightCm;
@@ -517,7 +517,7 @@ function updateTruck(res, truckId, body) {
 
   if (quantity < Number(activeReservations || 0)) {
     return sendJson(res, 400, {
-      error: `Nao e possivel reduzir a quantidade para ${quantity}. Existem ${activeReservations} unidade(s) desse caminhao em pedidos abertos.`
+      error: `Não é possível reduzir a quantidade para ${quantity}. Existem ${activeReservations} unidade(s) desse caminhão em pedidos abertos.`
     });
   }
 
@@ -541,13 +541,13 @@ function deleteTruck(res, truckId) {
 
   if (Number(activeReservations || 0) > 0) {
     return sendJson(res, 400, {
-      error: `Nao e possivel excluir este caminhao. Existem ${activeReservations} unidade(s) reservada(s) em pedidos abertos.`
+      error: `Não é possível excluir este caminhão. Existem ${activeReservations} unidade(s) reservada(s) em pedidos abertos.`
     });
   }
 
   const result = db.prepare('DELETE FROM trucks WHERE id = ?').run(truckId);
   if (!result.changes) {
-    return sendJson(res, 404, { error: 'Caminhao nao encontrado.' });
+    return sendJson(res, 404, { error: 'Caminhão não encontrado.' });
   }
 
   sendJson(res, 200, { ok: true });
@@ -560,12 +560,12 @@ function createUser(res, body) {
   const role = String(body?.role || 'user').trim();
 
   if (!name || !email || !password || !['admin', 'user'].includes(role)) {
-    return sendJson(res, 400, { error: 'Dados do usuario invalidos.' });
+    return sendJson(res, 400, { error: 'Dados do usuário inválidos.' });
   }
 
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
   if (existing) {
-    return sendJson(res, 409, { error: 'Email ja cadastrado.' });
+    return sendJson(res, 409, { error: 'E-mail já cadastrado.' });
   }
 
   db.prepare(`
@@ -579,7 +579,7 @@ function createUser(res, body) {
 function updateUser(currentUser, res, userId, body) {
   const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!existing) {
-    return sendJson(res, 404, { error: 'Usuario nao encontrado.' });
+    return sendJson(res, 404, { error: 'Usuário não encontrado.' });
   }
 
   const name = String(body?.name ?? existing.name).trim();
@@ -588,22 +588,22 @@ function updateUser(currentUser, res, userId, body) {
   const password = body?.password === undefined ? '' : String(body?.password || '');
 
   if (!name || !email || !['admin', 'user'].includes(role)) {
-    return sendJson(res, 400, { error: 'Dados do usuario invalidos.' });
+    return sendJson(res, 400, { error: 'Dados do usuário inválidos.' });
   }
 
   const duplicate = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(email, userId);
   if (duplicate) {
-    return sendJson(res, 409, { error: 'Email ja cadastrado.' });
+    return sendJson(res, 409, { error: 'E-mail já cadastrado.' });
   }
 
   if (existing.id === currentUser.id && role !== 'admin') {
-    return sendJson(res, 400, { error: 'Voce nao pode remover seu proprio acesso de administrador.' });
+    return sendJson(res, 400, { error: 'Você não pode remover seu próprio acesso de administrador.' });
   }
 
   if (existing.role === 'admin' && role !== 'admin') {
     const adminCount = db.prepare(`SELECT COUNT(*) AS count FROM users WHERE role = 'admin'`).get().count;
     if (adminCount <= 1) {
-      return sendJson(res, 400, { error: 'Nao e permitido remover o ultimo administrador do sistema.' });
+      return sendJson(res, 400, { error: 'Não é permitido remover o último administrador do sistema.' });
     }
   }
 
@@ -621,17 +621,17 @@ function updateUser(currentUser, res, userId, body) {
 function deleteUser(currentUser, res, userId) {
   const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!existing) {
-    return sendJson(res, 404, { error: 'Usuario nao encontrado.' });
+    return sendJson(res, 404, { error: 'Usuário não encontrado.' });
   }
 
   if (existing.id === currentUser.id) {
-    return sendJson(res, 400, { error: 'Voce nao pode excluir sua propria conta.' });
+    return sendJson(res, 400, { error: 'Você não pode excluir sua própria conta.' });
   }
 
   if (existing.role === 'admin') {
     const adminCount = db.prepare(`SELECT COUNT(*) AS count FROM users WHERE role = 'admin'`).get().count;
     if (adminCount <= 1) {
-      return sendJson(res, 400, { error: 'Nao e permitido excluir o ultimo administrador do sistema.' });
+      return sendJson(res, 400, { error: 'Não é permitido excluir o último administrador do sistema.' });
     }
   }
 
@@ -685,7 +685,7 @@ function createOrder(currentUser, res, body) {
 
   const allocationCheck = buildAllocationResult(load.totalVolumeCm3, parsedSelection.allocations);
   if (!allocationCheck.fits) {
-    return sendJson(res, 422, { error: 'A carga nao cabe nos caminhoes selecionados para este pedido.' });
+    return sendJson(res, 422, { error: 'A carga não cabe nos caminhões selecionados para este pedido.' });
   }
 
   try {
@@ -750,7 +750,7 @@ function createOrder(currentUser, res, body) {
   } catch (error) {
     db.exec('ROLLBACK');
     console.error(error);
-    sendJson(res, 500, { error: 'Nao foi possivel lancar o pedido.' });
+    sendJson(res, 500, { error: 'Não foi possível lancar o pedido.' });
   }
 }
 
@@ -775,7 +775,7 @@ function getOrderDetails(res, orderId) {
   `).get(orderId);
 
   if (!order) {
-    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+    return sendJson(res, 404, { error: 'Pedido não encontrado.' });
   }
 
   const items = db.prepare(`
@@ -817,11 +817,11 @@ function updateOrder(currentUser, res, orderId, body) {
   `).get(orderId);
 
   if (!existing) {
-    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+    return sendJson(res, 404, { error: 'Pedido não encontrado.' });
   }
 
   if (!canManageOrder(currentUser, existing)) {
-    return sendJson(res, 403, { error: 'Voce nao tem permissao para editar este pedido.' });
+    return sendJson(res, 403, { error: 'Você não tem permissão para editar este pedido.' });
   }
 
   if (existing.status !== 'open') {
@@ -843,12 +843,12 @@ function updateOrder(currentUser, res, orderId, body) {
   const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate, orderId);
   const availableTrucks = [...availability.values()].filter((truck) => truck.availableQuantity > 0);
   if (!availableTrucks.length) {
-    return sendJson(res, 422, { error: `Nao ha caminhoes disponiveis entre ${dateRange.startDate} e ${dateRange.endDate}.` });
+    return sendJson(res, 422, { error: `Não há caminhões disponíveis entre ${dateRange.startDate} e ${dateRange.endDate}.` });
   }
 
   const autoAllocation = findAutomaticAllocation(load.totalVolumeCm3, availableTrucks, [...availability.values()]);
   if (!autoAllocation || !autoAllocation.allocation?.fits) {
-    return sendJson(res, 422, { error: 'Nao foi possivel recalcular a frota para esse pedido com os dados informados.' });
+    return sendJson(res, 422, { error: 'Não foi possível recalcular a frota para esse pedido com os dados informados.' });
   }
 
   try {
@@ -903,18 +903,18 @@ function updateOrder(currentUser, res, orderId, body) {
   } catch (error) {
     db.exec('ROLLBACK');
     console.error(error);
-    return sendJson(res, 500, { error: 'Nao foi possivel atualizar o pedido.' });
+    return sendJson(res, 500, { error: 'Não foi possível atualizar o pedido.' });
   }
 }
 
 function concludeOrder(currentUser, res, orderId) {
   const existing = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(orderId);
   if (!existing) {
-    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+    return sendJson(res, 404, { error: 'Pedido não encontrado.' });
   }
 
   if (existing.status === 'completed') {
-    return sendJson(res, 400, { error: 'Este pedido ja foi concluido.' });
+    return sendJson(res, 400, { error: 'Este pedido já foi concluído.' });
   }
 
   db.prepare(`
@@ -932,11 +932,11 @@ function concludeOrder(currentUser, res, orderId) {
 function deleteOrder(currentUser, res, orderId) {
   const orderExists = db.prepare('SELECT id, created_by_user_id FROM orders WHERE id = ?').get(orderId);
   if (!orderExists) {
-    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+    return sendJson(res, 404, { error: 'Pedido não encontrado.' });
   }
 
   if (!canManageOrder(currentUser, orderExists)) {
-    return sendJson(res, 403, { error: 'Voce nao tem permissao para excluir este pedido.' });
+    return sendJson(res, 403, { error: 'Você não tem permissão para excluir este pedido.' });
   }
 
   try {
@@ -949,7 +949,7 @@ function deleteOrder(currentUser, res, orderId) {
   } catch (error) {
     db.exec('ROLLBACK');
     console.error(error);
-    sendJson(res, 500, { error: 'Nao foi possivel excluir o pedido.' });
+    sendJson(res, 500, { error: 'Não foi possível excluir o pedido.' });
   }
 }
 
@@ -1100,7 +1100,7 @@ function findAutomaticAllocation(totalVolumeCm3, availableTrucks, allTruckOption
 function parseOrderTruckSelection(rawTrucks, totalVolumeCm3, availability = new Map()) {
   const trucks = Array.isArray(rawTrucks) ? rawTrucks : [];
   if (!trucks.length) {
-    return { error: 'Calcule a carga e selecione os caminhoes antes de lancar o pedido.' };
+    return { error: 'Calcule a carga e selecione os caminhões antes de lançar o pedido.' };
   }
 
   const selectedByTruckId = new Map();
@@ -1109,19 +1109,19 @@ function parseOrderTruckSelection(rawTrucks, totalVolumeCm3, availability = new 
     const truckId = Number(item?.truckId);
     const quantity = Number(item?.quantity ?? 1);
     if (!Number.isInteger(truckId) || !Number.isInteger(quantity) || quantity <= 0) {
-      return { error: 'Selecao de caminhoes invalida.' };
+      return { error: 'Seleção de caminhões inválida.' };
     }
 
     const truck = availability.get(truckId) || db.prepare('SELECT id, name, volume_cm3, quantity FROM trucks WHERE id = ?').get(truckId);
     if (!truck) {
-      return { error: `Caminhao ${truckId} nao encontrado.` };
+      return { error: `Caminhão ${truckId} não encontrado.` };
     }
 
     const nextQuantity = (selectedByTruckId.get(truckId)?.quantity || 0) + quantity;
     const availableQuantity = Number(truck.availableQuantity ?? truck.quantity ?? 1);
     if (nextQuantity > availableQuantity) {
       return {
-        error: `O caminhao "${truck.name}" possui apenas ${availableQuantity} unidade(s) disponivel(is) para esse periodo.`
+        error: `O caminhão "${truck.name}" possui apenas ${availableQuantity} unidade(s) disponível(is) para esse período.`
       };
     }
 
@@ -1143,7 +1143,7 @@ function parseCanPayload(body) {
   const shape = String(body?.shape || '').trim();
 
   if (!name || !['square', 'cylinder'].includes(shape)) {
-    return { error: 'Nome e formato valido sao obrigatorios.' };
+    return { error: 'Nome e formato válido são obrigatórios.' };
   }
 
   let lengthCm = null;
@@ -1153,7 +1153,7 @@ function parseCanPayload(body) {
   const heightCm = Number(body?.heightCm);
 
   if (!Number.isFinite(heightCm) || heightCm <= 0) {
-    return { error: 'Altura invalida.' };
+    return { error: 'Altura inválida.' };
   }
 
   let volumeCm3;
@@ -1164,14 +1164,14 @@ function parseCanPayload(body) {
     depthCm = heightCm;
 
     if (![lengthCm, widthCm, depthCm].every((value) => Number.isFinite(value) && value > 0)) {
-      return { error: 'Medidas da lata quadrada invalidas.' };
+      return { error: 'Medidas da lata quadrada inválidas.' };
     }
 
     volumeCm3 = lengthCm * widthCm * depthCm;
   } else {
     diameterCm = Number(body?.diameterCm);
     if (!Number.isFinite(diameterCm) || diameterCm <= 0) {
-      return { error: 'Diametro invalido para lata cilindrica.' };
+      return { error: 'Diâmetro inválido para lata cilíndrica.' };
     }
 
     volumeCm3 = Math.PI * (diameterCm / 2) ** 2 * heightCm;
@@ -1197,7 +1197,7 @@ function calculateLoad(res, body) {
 
   const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
   if (!allTrucks.length) {
-    return sendJson(res, 422, { error: 'Nao ha caminhoes cadastrados para calcular a carga.' });
+    return sendJson(res, 422, { error: 'Não há caminhões cadastrados para calcular a carga.' });
   }
 
   const fallbackDate = body?.scheduledDate;
@@ -1220,8 +1220,8 @@ function calculateLoad(res, body) {
   if (!availableTrucks.length) {
     return sendJson(res, 422, {
       error: dateRange.startDate
-        ? `Nao ha caminhoes disponiveis entre ${dateRange.startDate} e ${dateRange.endDate}.`
-        : 'Nao ha caminhoes cadastrados para calcular a carga.'
+        ? `Não há caminhões disponíveis entre ${dateRange.startDate} e ${dateRange.endDate}.`
+        : 'Não há caminhões cadastrados para calcular a carga.'
     });
   }
 
@@ -1263,7 +1263,7 @@ function calculateAutomaticLoad(res, load, trucks, context = {}) {
 
   if (!automatic) {
     return sendJson(res, 422, {
-      error: 'Nao foi possivel encontrar combinacao de caminhoes para comportar a carga.',
+      error: 'Não foi possível encontrar combinação de caminhões para comportar a carga.',
       startDate: context.startDate || null,
       endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
@@ -1292,7 +1292,7 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
   if (type === 'single') {
     const truckId = Number(body?.manual?.truckId);
     if (!Number.isInteger(truckId)) {
-      return sendJson(res, 400, { error: 'Selecione um caminhao valido para o modo manual (um caminhao).' });
+      return sendJson(res, 400, { error: 'Selecione um caminhão valido para o modo manual (um caminhão).' });
     }
 
     const truck = trucks.find((entry) => entry.id === truckId);
@@ -1300,10 +1300,10 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
       const unavailableTruck = (context.availability || new Map()).get(truckId) || (context.allTrucks || []).find((entry) => entry.id === truckId);
       if (unavailableTruck && Number(unavailableTruck.availableQuantity || 0) <= 0 && context.startDate && context.endDate) {
         return sendJson(res, 409, {
-          error: `O caminhao "${unavailableTruck.name}" nao possui unidades disponiveis entre ${context.startDate} e ${context.endDate}.`
+          error: `O caminhão "${unavailableTruck.name}" não possui unidades disponíveis entre ${context.startDate} e ${context.endDate}.`
         });
       }
-      return sendJson(res, 404, { error: 'Caminhao selecionado nao encontrado.' });
+      return sendJson(res, 404, { error: 'Caminhão selecionado não encontrado.' });
     }
 
     const allocation = buildAllocationResult(load.totalVolumeCm3, [
@@ -1330,7 +1330,7 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
   if (type === 'multi') {
     const rawAllocations = Array.isArray(body?.manual?.allocations) ? body.manual.allocations : [];
     if (!rawAllocations.length) {
-      return sendJson(res, 400, { error: 'Adicione ao menos um caminhao para distribuicao manual.' });
+      return sendJson(res, 400, { error: 'Adicione ao menos um caminhão para distribuicao manual.' });
     }
 
     const byTruckId = new Map();
@@ -1338,7 +1338,7 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
       const truckId = Number(item?.truckId);
       const quantity = Number(item?.quantity ?? 1);
       if (!Number.isInteger(truckId) || !Number.isInteger(quantity) || quantity <= 0) {
-        return sendJson(res, 400, { error: 'Distribuicao manual invalida. Verifique os caminhoes selecionados.' });
+        return sendJson(res, 400, { error: 'Distribuição manual inválida. Verifique os caminhões selecionados.' });
       }
       byTruckId.set(truckId, (byTruckId.get(truckId) || 0) + quantity);
     }
@@ -1350,15 +1350,15 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
         const unavailableTruck = (context.availability || new Map()).get(truckId) || (context.allTrucks || []).find((entry) => entry.id === truckId);
         if (unavailableTruck && Number(unavailableTruck.availableQuantity || 0) <= 0 && context.startDate && context.endDate) {
           return sendJson(res, 409, {
-            error: `O caminhao "${unavailableTruck.name}" nao possui unidades disponiveis entre ${context.startDate} e ${context.endDate}.`
+            error: `O caminhão "${unavailableTruck.name}" não possui unidades disponíveis entre ${context.startDate} e ${context.endDate}.`
           });
         }
-        return sendJson(res, 404, { error: `Caminhao ${truckId} nao encontrado.` });
+        return sendJson(res, 404, { error: `Caminhão ${truckId} não encontrado.` });
       }
 
       if (quantity > Number(truck.availableQuantity || 0)) {
         return sendJson(res, 409, {
-          error: `O caminhao "${truck.name}" possui apenas ${truck.availableQuantity} unidade(s) disponivel(is) para esse periodo.`
+          error: `O caminhão "${truck.name}" possui apenas ${truck.availableQuantity} unidade(s) disponível(is) para esse período.`
         });
       }
 
@@ -1383,7 +1383,7 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
     });
   }
 
-  return sendJson(res, 400, { error: 'Tipo de distribuicao manual invalido.' });
+  return sendJson(res, 400, { error: 'Tipo de distribuição manual inválido.' });
 }
 
 function buildLoadSummary(itemsInput) {
@@ -1400,12 +1400,12 @@ function buildLoadSummary(itemsInput) {
     const canId = Number(item?.canId);
     const quantity = Number(item?.quantity);
     if (!Number.isInteger(canId) || !Number.isInteger(quantity) || quantity <= 0) {
-      return { error: 'Itens da carga invalidos.', status: 400 };
+      return { error: 'Itens da carga inválidos.', status: 400 };
     }
 
     const can = db.prepare('SELECT id, name, shape, volume_cm3 FROM cans WHERE id = ?').get(canId);
     if (!can) {
-      return { error: `Lata ${canId} nao encontrada.`, status: 404 };
+      return { error: `Lata ${canId} não encontrada.`, status: 404 };
     }
 
     const itemVolume = can.volume_cm3 * quantity;
@@ -1559,7 +1559,7 @@ function getSessionUser(req) {
 function requireAuth(req, res) {
   const user = getSessionUser(req);
   if (!user) {
-    sendJson(res, 401, { error: 'Nao autenticado.' });
+    sendJson(res, 401, { error: 'Não autenticado.' });
     return null;
   }
 
@@ -1652,7 +1652,7 @@ function serveStaticFile(res, pathname) {
 
   fs.readFile(filePath, (error, data) => {
     if (error) {
-      sendText(res, 404, 'Arquivo nao encontrado.');
+      sendText(res, 404, 'Arquivo não encontrado.');
       return;
     }
 
@@ -1705,7 +1705,7 @@ async function readJson(req) {
       try {
         resolve(JSON.parse(data));
       } catch (error) {
-        reject(new Error('JSON invalido.'));
+        reject(new Error('JSON inválido.'));
       }
     });
 

@@ -28,6 +28,10 @@ const state = {
 const loginCard = document.getElementById('login-card');
 const appSection = document.getElementById('app');
 const adminPanel = document.getElementById('admin-panel');
+const accountMenu = document.getElementById('account-menu');
+const accountMenuToggle = document.getElementById('account-menu-toggle');
+const accountMenuPanel = document.getElementById('account-menu-panel');
+const accountMenuAvatar = document.getElementById('account-menu-avatar');
 const logoutBtn = document.getElementById('logout-btn');
 const sessionInfo = document.getElementById('session-info');
 const toast = document.getElementById('toast');
@@ -96,6 +100,7 @@ async function init() {
 function bindEvents() {
   loginForm.addEventListener('submit', onLogin);
   logoutBtn.addEventListener('click', onLogout);
+  accountMenuToggle?.addEventListener('click', onAccountMenuToggle);
   userForm.addEventListener('submit', onCreateUser);
   canForm.addEventListener('submit', onCreateCan);
   truckForm.addEventListener('submit', onCreateTruck);
@@ -140,6 +145,7 @@ function bindEvents() {
   sideNavItems.forEach((item) => {
     item.addEventListener('click', () => onSideNavClick(item));
   });
+  document.addEventListener('click', onDocumentClick);
   mobileNavSelect?.addEventListener('change', () => {
     if (mobileNavSelect.value) {
       setCurrentView(mobileNavSelect.value);
@@ -188,6 +194,7 @@ async function onLogin(event) {
 }
 
 async function onLogout() {
+  closeAccountMenu();
   await api('/api/logout', { method: 'POST', body: {} });
   state.user = null;
   state.cargoItems = [];
@@ -230,9 +237,12 @@ function renderLoggedOut() {
   loginCard.classList.remove('hidden');
   appSection.classList.add('hidden');
   adminPanel.classList.add('hidden');
-  logoutBtn.classList.add('hidden');
-  sessionInfo.classList.add('hidden');
+  accountMenu?.classList.add('hidden');
+  closeAccountMenu();
   sessionInfo.textContent = '';
+  if (accountMenuAvatar) {
+    accountMenuAvatar.textContent = 'G';
+  }
   state.unavailableTruckIds = [];
   state.truckAvailabilityById = {};
   state.todayTruckAvailabilityById = {};
@@ -246,9 +256,12 @@ function renderLoggedOut() {
 function renderApp() {
   loginCard.classList.add('hidden');
   appSection.classList.remove('hidden');
-  logoutBtn.classList.remove('hidden');
-  sessionInfo.classList.remove('hidden');
+  accountMenu?.classList.remove('hidden');
+  closeAccountMenu();
   sessionInfo.textContent = `${state.user.name} (${state.user.role})`;
+  if (accountMenuAvatar) {
+    accountMenuAvatar.textContent = getUserInitials(state.user.name);
+  }
 
   if (state.user.role === 'admin') {
     adminPanel.classList.remove('hidden');
@@ -306,6 +319,32 @@ function setCurrentView(targetId) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+function onAccountMenuToggle(event) {
+  event.stopPropagation();
+  if (!accountMenu || accountMenu.classList.contains('hidden')) {
+    return;
+  }
+
+  const shouldOpen = accountMenuPanel.classList.contains('hidden');
+  accountMenuPanel.classList.toggle('hidden', !shouldOpen);
+  accountMenuToggle?.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+}
+
+function onDocumentClick(event) {
+  if (!accountMenu || accountMenu.classList.contains('hidden')) {
+    return;
+  }
+
+  if (!accountMenu.contains(event.target)) {
+    closeAccountMenu();
+  }
+}
+
+function closeAccountMenu() {
+  accountMenuPanel?.classList.add('hidden');
+  accountMenuToggle?.setAttribute('aria-expanded', 'false');
+}
+
 function renderHomeOverview() {
   const todayIso = getTodayDateIso();
   const openOrders = state.orders.filter((order) => order.status === 'open');
@@ -323,12 +362,12 @@ function renderHomeOverview() {
   inicioDateLabel.textContent = formatDate(todayIso);
 
   const stats = [
-    { label: 'Entregas concluidas', value: completedOrders.length, detail: 'Pedidos finalizados no sistema', tone: 'neutral' },
-    { label: 'Pedidos em aberto', value: openOrders.length, detail: 'Demandas aguardando conclusao', tone: 'warning' },
-    { label: 'Caminhoes disponiveis hoje', value: `${availableTodayCount}/${totalTruckUnits}`, detail: `Unidades livres em ${formatDate(todayIso)}`, tone: 'success' },
-    { label: 'Latas cadastradas', value: state.cans.length, detail: 'Modelos ativos para simulacao', tone: 'neutral' },
-    { label: 'Modelos de caminhao', value: state.trucks.length, detail: `${totalTruckUnits} unidade(s) cadastrada(s)`, tone: 'neutral' },
-    { label: state.user?.role === 'admin' ? 'Usuarios ativos' : 'Pedidos para hoje', value: state.user?.role === 'admin' ? state.users.length : ordersToday.length, detail: state.user?.role === 'admin' ? 'Contas cadastradas no sistema' : 'Entregas programadas para hoje', tone: 'accent' }
+    { label: 'Entregas concluídas', value: completedOrders.length, detail: 'Pedidos finalizados no sistema', tone: 'neutral' },
+    { label: 'Pedidos em aberto', value: openOrders.length, detail: 'Demandas aguardando conclusão', tone: 'warning' },
+    { label: 'Caminhões disponíveis hoje', value: `${availableTodayCount}/${totalTruckUnits}`, detail: `Unidades livres em ${formatDate(todayIso)}`, tone: 'success' },
+    { label: 'Latas cadastradas', value: state.cans.length, detail: 'Modelos ativos para simulação', tone: 'neutral' },
+    { label: 'Modelos de caminhão', value: state.trucks.length, detail: `${totalTruckUnits} unidade(s) cadastrada(s)`, tone: 'neutral' },
+    { label: state.user?.role === 'admin' ? 'Usuários ativos' : 'Pedidos para hoje', value: state.user?.role === 'admin' ? state.users.length : ordersToday.length, detail: state.user?.role === 'admin' ? 'Contas cadastradas no sistema' : 'Entregas programadas para hoje', tone: 'accent' }
   ];
 
   summaryStats.innerHTML = stats
@@ -346,7 +385,7 @@ function renderHomeOverview() {
   inicioOrdersList.innerHTML = buildOverviewListHtml(
     state.orders.slice(0, 5).map((order) => ({
       title: `Pedido #${order.id} • ${order.created_by_name}`,
-      meta: `${formatOrderRange(order)} • ${formatVolume(order.total_volume_cm3)} • ${order.status === 'completed' ? 'Concluido' : 'Aberto'}`,
+      meta: `${formatOrderRange(order)} • ${formatVolume(order.total_volume_cm3)} • ${order.status === 'completed' ? 'Concluído' : 'Aberto'}`,
       tone: order.status === 'completed' ? 'success' : 'warning'
     })),
     'Nenhum pedido cadastrado ainda.'
@@ -368,19 +407,19 @@ function renderHomeOverview() {
       }))
   ].slice(0, 6);
 
-  inicioTrucksList.innerHTML = buildOverviewListHtml(truckItems, 'Nenhuma informacao de frota disponivel.');
+  inicioTrucksList.innerHTML = buildOverviewListHtml(truckItems, 'Nenhuma informação de frota disponível.');
 
   const alerts = [
     `${openOrders.length} pedido(s) em aberto aguardando tratativa.`,
     `${ordersToday.length} pedido(s) com entrega ativa hoje.`,
-    `${busyTodayCount} unidade(s) de caminhao reservada(s) na operacao de hoje.`,
+    `${busyTodayCount} unidade(s) de caminhão reservada(s) na operação de hoje.`,
     `${openVolumeLiters.toFixed(2)} L em pedidos ainda abertos.`
   ];
 
   inicioAlertsList.innerHTML = buildOverviewListHtml(
     alerts.map((text, index) => ({
       title: text,
-      meta: index === 0 ? 'Monitoramento operacional' : 'Resumo automatico do sistema',
+      meta: index === 0 ? 'Monitoramento operacional' : 'Resumo automático do sistema',
       tone: index < 2 ? 'warning' : 'neutral'
     })),
     'Sem alertas no momento.'
@@ -388,8 +427,8 @@ function renderHomeOverview() {
 
   const capacityItems = [
     { title: `${totalCapacityLiters.toFixed(2)} L`, meta: 'Capacidade total de transporte cadastrada', tone: 'accent' },
-    { title: `${state.cans.length} formatos`, meta: 'Tipos de latas/baldes disponiveis', tone: 'neutral' },
-    { title: `${totalTruckUnits} veiculos`, meta: 'Unidades totais da frota configurada', tone: 'neutral' }
+    { title: `${state.cans.length} formatos`, meta: 'Tipos de latas/baldes disponíveis', tone: 'neutral' },
+    { title: `${totalTruckUnits} veículos`, meta: 'Unidades totais da frota configurada', tone: 'neutral' }
   ];
 
   inicioCapacityList.innerHTML = buildOverviewListHtml(capacityItems, 'Sem capacidade cadastrada.');
@@ -431,7 +470,7 @@ function renderCans() {
     }
     tr.innerHTML = `
       <td>${escapeHtml(can.name)}</td>
-      <td>${can.shape === 'square' ? 'Quadrada' : 'Cilindrica'}</td>
+      <td>${can.shape === 'square' ? 'Quadrada' : 'Cilíndrica'}</td>
       <td>${formatVolume(can.volume_cm3)}</td>
     `;
     tr.addEventListener('click', () => {
@@ -472,7 +511,7 @@ function renderTrucks() {
       tr.classList.add('selected-row');
     }
     tr.innerHTML = `
-      <td>${escapeHtml(truck.name)}${isUnavailable ? ' <span class="truck-busy-tag">Indisponivel no periodo</span>' : ''}</td>
+      <td>${escapeHtml(truck.name)}${isUnavailable ? ' <span class="truck-busy-tag">Indisponível no período</span>' : ''}</td>
       <td>${truck.length_cm} x ${truck.width_cm} x ${truck.height_cm} cm</td>
       <td>${availableUnits}/${totalUnits}</td>
       <td>${formatVolume(truck.volume_cm3)}</td>
@@ -487,7 +526,7 @@ function renderTrucks() {
 
     const option = document.createElement('option');
     option.value = String(truck.id);
-    option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)}) - ${availableUnits}/${totalUnits} disponivel(is)`;
+    option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)}) - ${availableUnits}/${totalUnits} disponível(is)`;
     option.disabled = isUnavailable;
     manualTruckSelect.appendChild(option);
   }
@@ -578,7 +617,7 @@ function renderOrders() {
       <td>${escapeHtml(formatDateTime(order.created_at))}</td>
       <td>${order.total_cans}</td>
       <td>${formatVolume(order.total_volume_cm3)}</td>
-      <td><span class="status-badge ${order.status === 'completed' ? 'status-completed' : 'status-open'}">${order.status === 'completed' ? 'Concluido' : 'Aberto'}</span></td>
+      <td><span class="status-badge ${order.status === 'completed' ? 'status-completed' : 'status-open'}">${order.status === 'completed' ? 'Concluído' : 'Aberto'}</span></td>
       <td>${state.user?.role === 'admin' ? '<button class="row-action view-order-btn" type="button">Ver</button>' : '-'}</td>
     `;
 
@@ -635,7 +674,7 @@ function renderCargoBuilder() {
 
 async function onLaunchOrder() {
   if (!state.cargoItems.length) {
-    showToast('Monte uma carga antes de lancar o pedido.');
+    showToast('Monte uma carga antes de lançar o pedido.');
     return;
   }
 
@@ -643,7 +682,7 @@ async function onLaunchOrder() {
   if (!orderRange) return;
 
   if (!state.lastCalculation) {
-    showToast('Calcule a carga para o periodo selecionado antes de lancar o pedido.');
+    showToast('Calcule a carga para o período selecionado antes de lançar o pedido.');
     return;
   }
 
@@ -653,12 +692,12 @@ async function onLaunchOrder() {
     state.lastCalculation.endDate !== orderRange.endDate ||
     state.lastCalculation.cargoSignature !== currentSignature
   ) {
-    showToast('A carga ou o periodo foi alterado. Recalcule antes de lancar o pedido.');
+    showToast('A carga ou o período foi alterado. Recalcule antes de lançar o pedido.');
     return;
   }
 
   if (!state.lastCalculation.allocation?.fits) {
-    showToast('A carga nao cabe. Ajuste os caminhoes antes de lancar o pedido.');
+    showToast('A carga não cabe. Ajuste os caminhões antes de lançar o pedido.');
     return;
   }
 
@@ -673,7 +712,7 @@ async function onLaunchOrder() {
   });
 
   if (!response.ok) {
-    showToast(response.data.error || 'Nao foi possivel lancar o pedido.');
+    showToast(response.data.error || 'Não foi possível lançar o pedido.');
     return;
   }
 
@@ -681,13 +720,13 @@ async function onLaunchOrder() {
   state.lastCalculation = null;
   await loadData();
   renderApp();
-  showToast(`Pedido #${response.data.orderId} lancado com sucesso.`);
+  showToast(`Pedido #${response.data.orderId} lançado com sucesso.`);
 }
 
 async function openOrderModal(orderId) {
   const response = await api(`/api/orders/${orderId}`);
   if (!response.ok) {
-    showToast(response.data.error || 'Nao foi possivel carregar o pedido.');
+    showToast(response.data.error || 'Não foi possível carregar o pedido.');
     return;
   }
 
@@ -702,7 +741,7 @@ async function openOrderModal(orderId) {
       return `
         <tr>
           <td>${escapeHtml(item.can_name)}</td>
-          <td>${item.can_shape === 'square' ? 'Quadrada' : 'Cilindrica'}</td>
+          <td>${item.can_shape === 'square' ? 'Quadrada' : 'Cilíndrica'}</td>
           <td>${item.quantity}</td>
           <td>${formatVolume(item.unit_volume_cm3)}</td>
           <td>${formatVolume(item.total_volume_cm3)}</td>
@@ -714,14 +753,14 @@ async function openOrderModal(orderId) {
   const completionInfo =
     order.status === 'completed'
       ? `
-        <p><strong>Concluido em:</strong> ${escapeHtml(formatDateTime(order.completed_at))}</p>
-        <p><strong>Concluido por:</strong> ${escapeHtml(order.completed_by_name || '-')}</p>
+        <p><strong>Concluído em:</strong> ${escapeHtml(formatDateTime(order.completed_at))}</p>
+        <p><strong>Concluído por:</strong> ${escapeHtml(order.completed_by_name || '-')}</p>
       `
       : '';
 
   const trucksHtml = trucks.length
     ? `<ul>${trucks.map((truck) => `<li>${Number(truck.quantity_reserved || 1)}x ${escapeHtml(truck.truck_name)}</li>`).join('')}</ul>`
-    : '<p>Nenhum caminhao vinculado.</p>';
+    : '<p>Nenhum caminhão vinculado.</p>';
 
   const canManage = canManageOrderOnClient(order);
   const modalActions = canManage || state.user?.role === 'admin'
@@ -735,13 +774,13 @@ async function openOrderModal(orderId) {
     : '';
 
   entityModalContent.innerHTML = `
-    <p><strong>Status:</strong> ${order.status === 'completed' ? 'Concluido' : 'Aberto'}</p>
+    <p><strong>Status:</strong> ${order.status === 'completed' ? 'Concluído' : 'Aberto'}</p>
     <p><strong>Solicitante:</strong> ${escapeHtml(order.created_by_name)}</p>
-    <p><strong>Periodo do pedido:</strong> ${escapeHtml(formatOrderRange(order))}</p>
+    <p><strong>Período do pedido:</strong> ${escapeHtml(formatOrderRange(order))}</p>
     <p><strong>Criado em:</strong> ${escapeHtml(formatDateTime(order.created_at))}</p>
     <p><strong>Total de latas:</strong> ${order.total_cans}</p>
     <p><strong>Volume total:</strong> ${formatVolume(order.total_volume_cm3)}</p>
-    <p><strong>Caminhoes reservados:</strong></p>
+    <p><strong>Caminhões reservados:</strong></p>
     ${trucksHtml}
     ${completionInfo}
     <table>
@@ -773,15 +812,15 @@ async function openOrderModal(orderId) {
     concludeBtn.addEventListener('click', () => {
       openConfirmModal({
         title: 'Concluir pedido',
-        message: `Confirma a conclusao do pedido #${order.id}? Essa acao libera os caminhoes reservados imediatamente.`,
+        message: `Confirma a conclusão do pedido #${order.id}? Essa ação libera os caminhões reservados imediatamente.`,
         confirmLabel: 'Concluir pedido',
         onConfirm: async () => {
           const concludeRes = await api(`/api/orders/${order.id}/conclude`, { method: 'POST', body: {} });
           if (!concludeRes.ok) {
-            showToast(concludeRes.data.error || 'Nao foi possivel concluir o pedido.');
+            showToast(concludeRes.data.error || 'Não foi possível concluir o pedido.');
             return;
           }
-          showToast(`Pedido #${order.id} concluido.`);
+          showToast(`Pedido #${order.id} concluído.`);
           await loadData();
           renderApp();
           openOrderModal(order.id);
@@ -795,16 +834,16 @@ async function openOrderModal(orderId) {
     deleteBtn.addEventListener('click', () => {
       openConfirmModal({
         title: 'Excluir pedido',
-        message: `Confirma a exclusao do pedido #${order.id}? Essa acao nao pode ser desfeita.`,
+        message: `Confirma a exclusão do pedido #${order.id}? Essa ação não pode ser desfeita.`,
         confirmLabel: 'Excluir pedido',
         danger: true,
         onConfirm: async () => {
           const deleteRes = await api(`/api/orders/${order.id}`, { method: 'DELETE' });
           if (!deleteRes.ok) {
-            showToast(deleteRes.data.error || 'Nao foi possivel excluir o pedido.');
+            showToast(deleteRes.data.error || 'Não foi possível excluir o pedido.');
             return;
           }
-          showToast(`Pedido #${order.id} excluido.`);
+          showToast(`Pedido #${order.id} excluído.`);
           closeEntityModal();
           await loadData();
           renderApp();
@@ -817,7 +856,7 @@ async function openOrderModal(orderId) {
 function openOrderEditModal(order, items) {
   const canManage = canManageOrderOnClient(order);
   if (!canManage) {
-    showToast('Voce nao tem permissao para editar este pedido.');
+    showToast('Você não tem permissão para editar este pedido.');
     return;
   }
 
@@ -951,7 +990,7 @@ function openOrderEditModal(order, items) {
       body: payload
     });
     if (!response.ok) {
-      showToast(response.data.error || 'Nao foi possivel atualizar o pedido.');
+      showToast(response.data.error || 'Não foi possível atualizar o pedido.');
       return;
     }
 
@@ -965,7 +1004,7 @@ function openOrderEditModal(order, items) {
 function openCanModal(canId) {
   const can = state.cans.find((entry) => entry.id === canId);
   if (!can) {
-    showToast('Lata nao encontrada.');
+    showToast('Lata não encontrada.');
     return;
   }
 
@@ -978,7 +1017,7 @@ function openCanModal(canId) {
       <p><strong>Nome:</strong> ${escapeHtml(can.name)}</p>
       <p><strong>Formato:</strong> ${can.shape === 'square' ? 'Lata Quadrada' : 'Balde Cilindrico'}</p>
       <p><strong>Volume:</strong> ${formatVolume(can.volume_cm3)}</p>
-      <p><strong>Dimensoes:</strong> ${escapeHtml(formatCanDimensions(can))}</p>
+      <p><strong>Dimensões:</strong> ${escapeHtml(formatCanDimensions(can))}</p>
       <p><strong>Cadastrada em:</strong> ${escapeHtml(String(can.created_at || '-'))}</p>
     `;
     entityModalOverlay.classList.remove('hidden');
@@ -1009,7 +1048,7 @@ function openCanModal(canId) {
         <input name="diameterCm" type="number" min="0.1" step="0.1" value="${can.diameter_cm ?? ''}" />
       </label>
       <div class="modal-actions">
-        <button type="submit" class="btn btn-primary">Salvar alteracoes</button>
+        <button type="submit" class="btn btn-primary">Salvar alterações</button>
         <button type="button" id="modal-delete-can-btn" class="row-action danger">Excluir lata</button>
       </div>
     </form>
@@ -1035,7 +1074,7 @@ function openCanModal(canId) {
 
     const response = await api(`/api/cans/${can.id}`, { method: 'PUT', body: payload });
     if (!response.ok) {
-      showToast(response.data.error || 'Nao foi possivel atualizar a lata.');
+      showToast(response.data.error || 'Não foi possível atualizar a lata.');
       return;
     }
 
@@ -1049,10 +1088,10 @@ function openCanModal(canId) {
     if (!window.confirm(`Excluir a lata "${can.name}"?`)) return;
     const response = await api(`/api/cans/${can.id}`, { method: 'DELETE' });
     if (!response.ok) {
-      showToast(response.data.error || 'Nao foi possivel excluir a lata.');
+      showToast(response.data.error || 'Não foi possível excluir a lata.');
       return;
     }
-    showToast('Lata excluida.');
+    showToast('Lata excluída.');
     closeEntityModal();
     await loadData();
     renderApp();
@@ -1062,19 +1101,19 @@ function openCanModal(canId) {
 function openTruckModal(truckId) {
   const truck = state.trucks.find((entry) => entry.id === truckId);
   if (!truck) {
-    showToast('Caminhao nao encontrado.');
+    showToast('Caminhão não encontrado.');
     return;
   }
 
   state.modal = { type: 'truck', id: truck.id };
-  entityModalTitle.textContent = 'Detalhes do caminhao';
+  entityModalTitle.textContent = 'Detalhes do caminhão';
   const isAdmin = state.user?.role === 'admin';
   const availability = getTruckAvailabilityInfo(truck.id);
 
   if (!isAdmin) {
     entityModalContent.innerHTML = `
       <p><strong>Nome:</strong> ${escapeHtml(truck.name)}</p>
-      <p><strong>Dimensoes internas:</strong> ${truck.length_cm} x ${truck.width_cm} x ${truck.height_cm} cm</p>
+      <p><strong>Dimensões internas:</strong> ${truck.length_cm} x ${truck.width_cm} x ${truck.height_cm} cm</p>
       <p><strong>Quantidade cadastrada:</strong> ${availability.totalQuantity || truck.quantity || 1}</p>
       <p><strong>Volume total:</strong> ${formatVolume(truck.volume_cm3)}</p>
       <p><strong>Cadastrado em:</strong> ${escapeHtml(String(truck.created_at || '-'))}</p>
@@ -1101,8 +1140,8 @@ function openTruckModal(truckId) {
         <input name="quantity" type="number" min="1" step="1" value="${Number(truck.quantity || 1)}" required />
       </label>
       <div class="modal-actions">
-        <button type="submit" class="btn btn-primary">Salvar alteracoes</button>
-        <button type="button" id="modal-delete-truck-btn" class="row-action danger">Excluir caminhao</button>
+        <button type="submit" class="btn btn-primary">Salvar alterações</button>
+        <button type="button" id="modal-delete-truck-btn" class="row-action danger">Excluir caminhão</button>
       </div>
     </form>
   `;
@@ -1122,23 +1161,23 @@ function openTruckModal(truckId) {
     };
     const response = await api(`/api/trucks/${truck.id}`, { method: 'PUT', body: payload });
     if (!response.ok) {
-      showToast(response.data.error || 'Nao foi possivel atualizar o caminhao.');
+      showToast(response.data.error || 'Não foi possível atualizar o caminhão.');
       return;
     }
-    showToast('Caminhao atualizado.');
+    showToast('Caminhão atualizado.');
     await loadData();
     renderApp();
     openTruckModal(truck.id);
   });
 
   deleteBtn.addEventListener('click', async () => {
-    if (!window.confirm(`Excluir o caminhao "${truck.name}"?`)) return;
+    if (!window.confirm(`Excluir o caminhão "${truck.name}"?`)) return;
     const response = await api(`/api/trucks/${truck.id}`, { method: 'DELETE' });
     if (!response.ok) {
-      showToast(response.data.error || 'Nao foi possivel excluir o caminhao.');
+      showToast(response.data.error || 'Não foi possível excluir o caminhão.');
       return;
     }
-    showToast('Caminhao excluido.');
+    showToast('Caminhão excluído.');
     closeEntityModal();
     await loadData();
     renderApp();
@@ -1148,12 +1187,12 @@ function openTruckModal(truckId) {
 function openUserModal(userId) {
   const user = state.users.find((entry) => entry.id === userId);
   if (!user) {
-    showToast('Usuario nao encontrado.');
+    showToast('Usuário não encontrado.');
     return;
   }
 
   state.modal = { type: 'user', id: user.id };
-  entityModalTitle.textContent = 'Detalhes do usuario';
+  entityModalTitle.textContent = 'Detalhes do usuário';
 
   entityModalContent.innerHTML = `
     <form id="modal-user-form" class="grid-form">
@@ -1165,7 +1204,7 @@ function openUserModal(userId) {
       </label>
       <label>Perfil
         <select name="role">
-          <option value="user" ${user.role === 'user' ? 'selected' : ''}>Usuario</option>
+          <option value="user" ${user.role === 'user' ? 'selected' : ''}>Usuário</option>
           <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Administrador</option>
         </select>
       </label>
@@ -1173,8 +1212,8 @@ function openUserModal(userId) {
         <input name="password" type="password" />
       </label>
       <div class="modal-actions">
-        <button type="submit" class="btn btn-primary">Salvar alteracoes</button>
-        <button type="button" id="modal-delete-user-btn" class="row-action danger">Excluir usuario</button>
+        <button type="submit" class="btn btn-primary">Salvar alterações</button>
+        <button type="button" id="modal-delete-user-btn" class="row-action danger">Excluir usuário</button>
       </div>
     </form>
   `;
@@ -1195,23 +1234,23 @@ function openUserModal(userId) {
 
     const response = await api(`/api/users/${user.id}`, { method: 'PUT', body: payload });
     if (!response.ok) {
-      showToast(response.data.error || 'Nao foi possivel atualizar o usuario.');
+      showToast(response.data.error || 'Não foi possível atualizar o usuário.');
       return;
     }
-    showToast('Usuario atualizado.');
+    showToast('Usuário atualizado.');
     await loadData();
     renderApp();
     openUserModal(user.id);
   });
 
   deleteBtn.addEventListener('click', async () => {
-    if (!window.confirm(`Excluir o usuario "${user.name}"?`)) return;
+    if (!window.confirm(`Excluir o usuário "${user.name}"?`)) return;
     const response = await api(`/api/users/${user.id}`, { method: 'DELETE' });
     if (!response.ok) {
-      showToast(response.data.error || 'Nao foi possivel excluir o usuario.');
+      showToast(response.data.error || 'Não foi possível excluir o usuário.');
       return;
     }
-    showToast('Usuario excluido.');
+    showToast('Usuário excluído.');
     closeEntityModal();
     await loadData();
     renderApp();
@@ -1243,6 +1282,11 @@ function closeEntityModal() {
 }
 
 function onGlobalKeydown(event) {
+  if (event.key === 'Escape' && accountMenu && !accountMenuPanel.classList.contains('hidden')) {
+    closeAccountMenu();
+    return;
+  }
+
   if (event.key === 'Escape' && !confirmModalOverlay.classList.contains('hidden')) {
     closeConfirmModal(false);
     return;
@@ -1255,7 +1299,7 @@ function onGlobalKeydown(event) {
 
 function openConfirmModal({ title, message, confirmLabel = 'Confirmar', danger = false, onConfirm }) {
   state.confirmModal = { onConfirm };
-  confirmModalTitle.textContent = title || 'Confirmar acao';
+  confirmModalTitle.textContent = title || 'Confirmar ação';
   confirmModalContent.innerHTML = `<p>${escapeHtml(message || 'Deseja continuar?')}</p>`;
   confirmModalConfirmBtn.textContent = confirmLabel;
   confirmModalConfirmBtn.classList.toggle('btn-danger', danger);
@@ -1267,6 +1311,17 @@ function closeConfirmModal(_confirmed = false) {
   confirmModalOverlay.classList.add('hidden');
   confirmModalContent.innerHTML = '';
   state.confirmModal = null;
+}
+
+function getUserInitials(name) {
+  const initials = String(name || 'Conta')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('');
+  return initials || 'C';
 }
 
 async function onCreateUser(event) {
@@ -1281,14 +1336,14 @@ async function onCreateUser(event) {
 
   const response = await api('/api/users', { method: 'POST', body: payload });
   if (!response.ok) {
-    showToast(response.data.error || 'Nao foi possivel cadastrar usuario.');
+    showToast(response.data.error || 'Não foi possível cadastrar usuário.');
     return;
   }
 
   userForm.reset();
   await loadData();
   renderUsers();
-  showToast('Usuario cadastrado.');
+  showToast('Usuário cadastrado.');
 }
 
 async function onCreateCan(event) {
@@ -1305,7 +1360,7 @@ async function onCreateCan(event) {
 
   const response = await api('/api/cans', { method: 'POST', body: payload });
   if (!response.ok) {
-    showToast(response.data.error || 'Nao foi possivel cadastrar lata.');
+    showToast(response.data.error || 'Não foi possível cadastrar lata.');
     return;
   }
 
@@ -1329,14 +1384,14 @@ async function onCreateTruck(event) {
 
   const response = await api('/api/trucks', { method: 'POST', body: payload });
   if (!response.ok) {
-    showToast(response.data.error || 'Nao foi possivel cadastrar caminhao.');
+    showToast(response.data.error || 'Não foi possível cadastrar caminhão.');
     return;
   }
 
   truckForm.reset();
   await loadData();
   renderApp();
-  showToast('Caminhao cadastrado.');
+  showToast('Caminhão cadastrado.');
 }
 
 function onAddCargoItem(event) {
@@ -1346,7 +1401,7 @@ function onAddCargoItem(event) {
   const quantity = Number(quantityInput.value);
 
   if (!Number.isInteger(canId) || !Number.isInteger(quantity) || quantity <= 0) {
-    showToast('Selecione uma lata e uma quantidade valida.');
+    showToast('Selecione uma lata e uma quantidade válida.');
     return;
   }
 
@@ -1381,7 +1436,7 @@ async function onCalculateAutomatic() {
   if (!response.ok) {
     state.lastCalculation = null;
     resultBox.classList.remove('hidden');
-    resultBox.innerHTML = `<strong>Falha:</strong> ${escapeHtml(response.data.error || 'Nao foi possivel calcular.')}`;
+    resultBox.innerHTML = `<strong>Falha:</strong> ${escapeHtml(response.data.error || 'Não foi possível calcular.')}`;
     return;
   }
 
@@ -1403,7 +1458,7 @@ async function onManualSingleSimulation(event) {
 
   const truckId = Number(manualTruckSelect.value);
   if (!Number.isInteger(truckId)) {
-    showToast('Selecione um caminhao para simulacao manual.');
+    showToast('Selecione um caminhão para simulação manual.');
     return;
   }
 
@@ -1421,7 +1476,7 @@ async function onManualSingleSimulation(event) {
   if (!response.ok) {
     state.lastCalculation = null;
     manualResultBox.classList.remove('hidden');
-    manualResultBox.innerHTML = `<strong>Falha:</strong> ${escapeHtml(response.data.error || 'Nao foi possivel simular.')}`;
+    manualResultBox.innerHTML = `<strong>Falha:</strong> ${escapeHtml(response.data.error || 'Não foi possível simular.')}`;
     return;
   }
 
@@ -1444,7 +1499,7 @@ async function onManualMultiSimulation() {
     .filter((row) => Number.isInteger(row.truckId));
 
   if (!allocations.length) {
-    showToast('Adicione pelo menos um caminhao valido.');
+    showToast('Adicione pelo menos um caminhão válido.');
     return;
   }
 
@@ -1462,7 +1517,7 @@ async function onManualMultiSimulation() {
   if (!response.ok) {
     state.lastCalculation = null;
     manualResultBox.classList.remove('hidden');
-    manualResultBox.innerHTML = `<strong>Falha:</strong> ${escapeHtml(response.data.error || 'Nao foi possivel simular.')}`;
+    manualResultBox.innerHTML = `<strong>Falha:</strong> ${escapeHtml(response.data.error || 'Não foi possível simular.')}`;
     return;
   }
 
@@ -1531,7 +1586,7 @@ function onAddManualAllocation() {
   const candidate = state.trucks.find((truck) => getTruckAvailabilityInfo(truck.id).availableQuantity > 0 && !usedTruckIds.has(truck.id));
 
   if (!candidate) {
-    showToast('Nao ha mais modelos de caminhao disponiveis para adicionar nesse periodo.');
+    showToast('Não há mais modelos de caminhão disponíveis para adicionar nesse período.');
     return;
   }
 
@@ -1552,7 +1607,7 @@ function renderManualAllocationRows() {
     wrapper.className = 'allocation-row';
 
     const selectLabel = document.createElement('label');
-    selectLabel.textContent = 'Caminhao';
+    selectLabel.textContent = 'Caminhão';
     const select = document.createElement('select');
     const usedByOtherRows = new Set(
       state.manualAllocations.filter((entry) => entry.id !== row.id).map((entry) => Number(entry.truckId))
@@ -1563,7 +1618,7 @@ function renderManualAllocationRows() {
       const availableUnits = Number(getTruckAvailabilityInfo(truck.id).availableQuantity || 0);
       const totalUnits = Number(getTruckAvailabilityInfo(truck.id).totalQuantity || truck.quantity || 1);
       const isUnavailable = availableUnits <= 0;
-      option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)}) - ${availableUnits}/${totalUnits} disponivel(is)`;
+      option.textContent = `${truck.name} (${formatVolume(truck.volume_cm3)}) - ${availableUnits}/${totalUnits} disponível(is)`;
       option.disabled = isUnavailable || usedByOtherRows.has(truck.id);
       select.appendChild(option);
     }
@@ -1598,7 +1653,7 @@ function renderManualAllocationRows() {
     removeBtn.textContent = 'Remover';
     removeBtn.addEventListener('click', () => {
       if (state.manualAllocations.length <= 1) {
-        showToast('Mantenha ao menos um item de caminhao na distribuicao manual.');
+        showToast('Mantenha ao menos um item de caminhão na distribuição manual.');
         return;
       }
       state.manualAllocations = state.manualAllocations.filter((entry) => entry.id !== row.id);
@@ -1637,7 +1692,7 @@ async function syncTruckAvailabilityForRange(showErrorToast) {
   if (!response.ok) {
     state.unavailableTruckIds = [];
     if (showErrorToast) {
-      showToast(response.data.error || 'Nao foi possivel carregar disponibilidade de caminhoes.');
+      showToast(response.data.error || 'Não foi possível carregar disponibilidade de caminhões.');
     }
     return;
   }
@@ -1649,14 +1704,14 @@ async function syncTruckAvailabilityForRange(showErrorToast) {
 function renderDateAvailabilityHint() {
   const range = getSelectedOrderRange(false);
   if (!range) {
-    dateAvailabilityHint.textContent = 'Selecione o periodo para verificar disponibilidade de caminhoes.';
+    dateAvailabilityHint.textContent = 'Selecione o período para verificar disponibilidade de caminhões.';
     return;
   }
 
   const reservedUnits = state.trucks.reduce((sum, truck) => sum + Number(getTruckAvailabilityInfo(truck.id).reservedQuantity || 0), 0);
   const unavailableModels = state.unavailableTruckIds.length;
   if (!reservedUnits) {
-    dateAvailabilityHint.textContent = `Todos os caminhoes estao disponiveis entre ${formatDate(range.startDate)} e ${formatDate(range.endDate)}.`;
+    dateAvailabilityHint.textContent = `Todos os caminhões estão disponíveis entre ${formatDate(range.startDate)} e ${formatDate(range.endDate)}.`;
     return;
   }
 
@@ -1727,18 +1782,18 @@ function getTodayDateIso() {
 function renderCalculationResult(targetBox, payload, sourceMode) {
   const allocation = normalizeAllocationFromPayload(payload);
   if (!allocation) {
-    targetBox.innerHTML = `<strong>Falha:</strong> Resultado de calculo invalido.`;
+    targetBox.innerHTML = `<strong>Falha:</strong> Resultado de cálculo inválido.`;
     return;
   }
 
   const title =
     sourceMode === 'automatic'
       ? payload.strategy === 'single'
-        ? 'Resultado automatico (1 caminhao)'
-        : 'Resultado automatico (distribuido em varios caminhoes)'
+        ? 'Resultado automático (1 caminhão)'
+        : 'Resultado automático (distribuído em vários caminhões)'
       : payload.strategy === 'single'
-        ? 'Resultado manual (1 caminhao)'
-        : 'Resultado manual (distribuido)';
+        ? 'Resultado manual (1 caminhão)'
+        : 'Resultado manual (distribuído)';
 
   const trucksHtml = allocation.trucks
     .map((truck) => {
@@ -1748,10 +1803,10 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
 
   const statusLine = allocation.fits
     ? `<p><strong>Status:</strong> Carga comportada.</p>`
-    : `<p><strong>Status:</strong> Espaco insuficiente.</p>`;
+    : `<p><strong>Status:</strong> Espaço insuficiente.</p>`;
 
   const trailing = allocation.fits
-    ? `<p><strong>Sobra de espaco:</strong> ${formatVolume(allocation.leftoverCm3)}</p>`
+    ? `<p><strong>Sobra de espaço:</strong> ${formatVolume(allocation.leftoverCm3)}</p>`
     : `<p><strong>Carga que ficaria de fora:</strong> ${formatVolume(allocation.missingCm3)}</p>`;
 
   const range = {
@@ -1760,7 +1815,7 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
   };
   const rangeLine =
     range.startDate && range.endDate
-      ? `<p><strong>Periodo do pedido:</strong> ${escapeHtml(formatDateRange(range.startDate, range.endDate))}</p>`
+      ? `<p><strong>Período do pedido:</strong> ${escapeHtml(formatDateRange(range.startDate, range.endDate))}</p>`
       : '';
 
   targetBox.innerHTML = `
@@ -1772,7 +1827,7 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
     <ul>${trucksHtml}</ul>
     ${statusLine}
     ${trailing}
-    <p><strong>Ocupacao:</strong> ${((allocation.occupancyRate || 0) * 100).toFixed(2)}%</p>
+    <p><strong>Ocupação:</strong> ${((allocation.occupancyRate || 0) * 100).toFixed(2)}%</p>
   `;
 }
 

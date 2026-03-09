@@ -74,15 +74,89 @@ body {
   color: rgba(255, 255, 255, 0.75);
 }
 
-.session-info {
+.account-menu {
+  position: relative;
   margin-left: auto;
-  padding: 8px 12px;
+}
+
+.account-menu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 999px;
+  padding: 8px 14px 8px 10px;
   background: rgba(14, 17, 24, 0.88);
-  border: 1px solid rgba(255, 255, 255, 0.24);
   color: #fff;
-  font-size: 0.86rem;
+  font: inherit;
   font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.account-menu-toggle:hover {
+  background: rgba(22, 26, 36, 0.96);
+}
+
+.account-menu-toggle:focus-visible {
+  outline: 3px solid rgba(243, 218, 0, 0.35);
+  outline-offset: 2px;
+}
+
+.account-menu-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--brand-yellow);
+  color: #171a22;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.account-menu-caret {
+  font-size: 0.78rem;
+  opacity: 0.8;
+}
+
+.account-menu-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 35;
+  min-width: 230px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #d3d7e0;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f8f9fb 0%, #eef1f6 100%);
+  box-shadow: 0 18px 42px rgba(16, 19, 28, 0.18);
+}
+
+.account-menu-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.session-info {
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.account-menu-panel #logout-btn {
+  width: 100%;
 }
 
 .container {
@@ -844,10 +918,6 @@ tbody tr:last-child td {
     gap: 10px;
   }
 
-  .session-info {
-    margin-left: 0;
-  }
-
   .inline-form,
   .manual-inline-form,
   .allocation-row,
@@ -963,16 +1033,22 @@ tbody tr:last-child td {
     font-size: 1.45rem;
   }
 
-  .session-info {
-    width: 100%;
-    text-align: center;
-    order: 3;
+  .account-menu {
+    margin-left: auto;
+  }
+
+  .account-menu-toggle {
+    min-height: 42px;
     padding: 7px 10px;
   }
 
-  #logout-btn {
-    width: 100%;
-    order: 4;
+  .account-menu-toggle-label {
+    display: none;
+  }
+
+  .account-menu-panel {
+    width: min(240px, calc(100vw - 20px));
+    min-width: 0;
   }
 
   .side-nav {
