@@ -146,6 +146,14 @@ body {
   gap: 6px;
 }
 
+.mobile-nav-control {
+  display: none;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
 .nav-list li {
   border-radius: 10px;
   padding: 10px 12px;
@@ -801,11 +809,12 @@ tbody tr:last-child td {
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
+    gap: 12px;
   }
 
   .side-nav {
     position: static;
-    padding: 12px;
+    padding: 12px 14px;
   }
 
   .side-brand {
@@ -832,6 +841,7 @@ tbody tr:last-child td {
   .topbar {
     flex-wrap: wrap;
     background: linear-gradient(180deg, var(--brand-black) 0%, #161b26 46%, var(--brand-yellow) 47%, #f6e75f 100%);
+    gap: 10px;
   }
 
   .session-info {
@@ -850,12 +860,66 @@ tbody tr:last-child td {
     align-items: stretch;
   }
 
+  .hero-badge {
+    width: 100%;
+  }
+
+  .mobile-nav-control {
+    display: grid;
+  }
+
+  .nav-list {
+    display: none;
+  }
+
+  .side-nav {
+    padding: 10px 12px;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .card h2,
+  .admin-panel > h2 {
+    font-size: 1.4rem;
+    margin-bottom: 6px;
+  }
+
+  .card h3 {
+    font-size: 1.08rem;
+  }
+
+  .summary-grid,
+  .home-grid,
+  .home-grid-secondary,
+  .admin-grid,
+  .inline-form,
+  .manual-inline-form {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-row {
+    padding: 9px;
+  }
+
+  .calc-mode-switch {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .modal-card {
+    padding: 12px;
+    max-height: 88vh;
+  }
+
   .table-wrap {
     overflow-x: auto;
   }
 
   .table-wrap table {
-    min-width: 640px;
+    min-width: 560px;
   }
 
   .table-wrap-medium,
@@ -871,37 +935,74 @@ tbody tr:last-child td {
 
 @media (max-width: 680px) {
   .container {
-    padding: 0 10px;
+    padding: 0 8px;
   }
 
   .topbar {
-    padding: 10px 12px;
+    padding: 10px;
+  }
+
+  .brand {
+    gap: 10px;
+  }
+
+  .brand img {
+    width: 44px;
+    height: 44px;
   }
 
   .brand h1 {
-    font-size: 1.16rem;
+    font-size: 1.05rem;
   }
 
   .brand p {
-    font-size: 0.78rem;
-  }
-
-  .nav-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    font-size: 0.74rem;
   }
 
   .summary-value {
-    font-size: 1.7rem;
+    font-size: 1.45rem;
   }
 
   .session-info {
     width: 100%;
     text-align: center;
     order: 3;
+    padding: 7px 10px;
   }
 
   #logout-btn {
     width: 100%;
     order: 4;
+  }
+
+  .side-nav {
+    border-radius: 14px;
+  }
+
+  .overview-item,
+  .summary-card {
+    padding: 12px;
+    min-height: auto;
+  }
+
+  .table-wrap table {
+    min-width: 500px;
+    font-size: 0.88rem;
+  }
+
+  th,
+  td {
+    padding: 8px 6px;
+  }
+
+  .btn,
+  .row-action,
+  .remove-btn {
+    width: 100%;
+  }
+
+  .manual-multi-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 }

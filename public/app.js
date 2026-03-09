@@ -76,6 +76,8 @@ const confirmModalConfirmBtn = document.getElementById('confirm-modal-confirm-bt
 const calculationModeInputs = document.querySelectorAll('input[name="calculationMode"]');
 const sideNavItems = document.querySelectorAll('.nav-list li[data-target]');
 const navAdminItem = document.getElementById('nav-admin-item');
+const mobileNavSelect = document.getElementById('mobile-nav-select');
+const mobileNavAdminOption = document.getElementById('mobile-nav-admin-option');
 const viewPanes = document.querySelectorAll('.view-pane');
 const summaryStats = document.getElementById('summary-stats');
 const inicioOrdersList = document.getElementById('inicio-orders-list');
@@ -137,6 +139,11 @@ function bindEvents() {
   });
   sideNavItems.forEach((item) => {
     item.addEventListener('click', () => onSideNavClick(item));
+  });
+  mobileNavSelect?.addEventListener('change', () => {
+    if (mobileNavSelect.value) {
+      setCurrentView(mobileNavSelect.value);
+    }
   });
   document.addEventListener('keydown', onGlobalKeydown);
   orderStartDateInput.value = getTodayDateIso();
@@ -246,9 +253,13 @@ function renderApp() {
   if (state.user.role === 'admin') {
     adminPanel.classList.remove('hidden');
     navAdminItem?.classList.remove('hidden');
+    mobileNavAdminOption?.removeAttribute('hidden');
+    if (mobileNavAdminOption) mobileNavAdminOption.disabled = false;
   } else {
     adminPanel.classList.add('hidden');
     navAdminItem?.classList.add('hidden');
+    mobileNavAdminOption?.setAttribute('hidden', 'hidden');
+    if (mobileNavAdminOption) mobileNavAdminOption.disabled = true;
     if (state.currentView === 'admin-panel') {
       state.currentView = 'inicio-section';
     }
@@ -275,6 +286,9 @@ function setActiveSideNav(targetId) {
   sideNavItems.forEach((entry) => {
     entry.classList.toggle('active', entry.dataset.target === targetId);
   });
+  if (mobileNavSelect) {
+    mobileNavSelect.value = targetId;
+  }
 }
 
 function setCurrentView(targetId) {
