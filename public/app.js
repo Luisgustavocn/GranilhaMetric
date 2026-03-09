@@ -14,12 +14,15 @@ const state = {
   todayBusyTruckIds: [],
   todayBusyTrucks: [],
   todayTruckAvailabilityById: {},
+  truckSchedule: null,
   calculationMode: 'automatic',
   manualDistributionType: 'single',
   manualSingleTruckId: null,
   manualAllocations: [{ id: 1, truckId: null, quantity: 1 }],
   nextManualAllocationId: 2,
   lastCalculation: null,
+  agendaStartDate: null,
+  agendaEndDate: null,
   currentView: 'inicio-section',
   modal: null,
   confirmModal: null
@@ -56,6 +59,9 @@ const orderStartDateInput = document.getElementById('order-start-date-input');
 const orderEndDateInput = document.getElementById('order-end-date-input');
 const legacyOrderDateInput = document.getElementById('order-date-input');
 const dateAvailabilityHint = document.getElementById('date-availability-hint');
+const agendaStartDateInput = document.getElementById('agenda-start-date-input');
+const agendaEndDateInput = document.getElementById('agenda-end-date-input');
+const agendaRefreshBtn = document.getElementById('agenda-refresh-btn');
 
 const canSelect = document.getElementById('can-select');
 const quantityInput = document.getElementById('quantity-input');
@@ -89,6 +95,11 @@ const inicioTrucksList = document.getElementById('inicio-trucks-list');
 const inicioAlertsList = document.getElementById('inicio-alerts-list');
 const inicioCapacityList = document.getElementById('inicio-capacity-list');
 const inicioDateLabel = document.getElementById('inicio-date-label');
+const agendaSummary = document.getElementById('agenda-summary');
+const agendaRangeLabel = document.getElementById('agenda-range-label');
+const agendaCalendarTable = document.getElementById('agenda-calendar-table');
+const agendaReservationsList = document.getElementById('agenda-reservations-list');
+const agendaTrucksList = document.getElementById('agenda-trucks-list');
 
 init();
 
@@ -112,6 +123,11 @@ function bindEvents() {
   launchOrderBtn.addEventListener('click', onLaunchOrder);
   orderStartDateInput.addEventListener('change', onOrderDateChange);
   orderEndDateInput.addEventListener('change', onOrderDateChange);
+  agendaStartDateInput?.addEventListener('change', onAgendaRangeChange);
+  agendaEndDateInput?.addEventListener('change', onAgendaRangeChange);
+  agendaRefreshBtn?.addEventListener('click', () => {
+    loadTruckSchedule(true);
+  });
   manualDistributionTypeSelect.addEventListener('change', onManualDistributionTypeChange);
   manualTruckSelect.addEventListener('change', () => {
     const selected = Number(manualTruckSelect.value);
@@ -152,8 +168,13 @@ function bindEvents() {
     }
   });
   document.addEventListener('keydown', onGlobalKeydown);
-  orderStartDateInput.value = getTodayDateIso();
-  orderEndDateInput.value = getTodayDateIso();
+  const todayIso = getTodayDateIso();
+  orderStartDateInput.value = todayIso;
+  orderEndDateInput.value = todayIso;
+  state.agendaStartDate = todayIso;
+  state.agendaEndDate = addDaysIso(todayIso, 6);
+  if (agendaStartDateInput) agendaStartDateInput.value = state.agendaStartDate;
+  if (agendaEndDateInput) agendaEndDateInput.value = state.agendaEndDate;
   syncLegacyOrderDateInput();
   syncCalculationPanels();
   syncCanShapeFields();
@@ -223,6 +244,7 @@ async function loadData() {
   state.todayTruckAvailabilityById = buildTruckAvailabilityLookup(todayAvailabilityRes.ok ? todayAvailabilityRes.data.availability : []);
   state.cargoItems = state.cargoItems.filter((item) => state.cans.some((can) => can.id === item.canId));
   await syncTruckAvailabilityForRange(false);
+  await loadTruckSchedule(false);
   sanitizeManualSelections();
 
   if (state.user?.role === 'admin') {
@@ -248,6 +270,7 @@ function renderLoggedOut() {
   state.todayTruckAvailabilityById = {};
   state.todayBusyTruckIds = [];
   state.todayBusyTrucks = [];
+  state.truckSchedule = null;
   state.lastCalculation = null;
   state.currentView = 'inicio-section';
   closeEntityModal();
@@ -285,6 +308,7 @@ function renderApp() {
   renderUsers();
   renderOrders();
   renderCargoBuilder();
+  renderTruckSchedule();
   syncCalculationPanels();
   setCurrentView(state.currentView);
 }
@@ -639,6 +663,155 @@ function renderOrders() {
 
     ordersBody.appendChild(tr);
   }
+}
+
+function renderTruckSchedule() {
+  if (!agendaSummary || !agendaCalendarTable || !agendaReservationsList || !agendaTrucksList || !agendaRangeLabel) {
+    return;
+  }
+
+  const schedule = state.truckSchedule;
+  if (!schedule || !Array.isArray(schedule.trucks) || !Array.isArray(schedule.dates)) {
+    agendaSummary.innerHTML = '';
+    agendaCalendarTable.innerHTML = '';
+    agendaRangeLabel.textContent = 'Selecione um período para carregar a agenda.';
+    agendaReservationsList.innerHTML = buildOverviewListHtml([], 'Nenhuma reserva carregada.');
+    agendaTrucksList.innerHTML = buildOverviewListHtml([], 'Nenhuma informação de frota carregada.');
+    return;
+  }
+
+  agendaRangeLabel.textContent = `Período consultado: ${formatDateRange(schedule.startDate, schedule.endDate)}.`;
+
+  const flattenedReservations = schedule.trucks
+    .flatMap((truck) =>
+      (truck.reservations || []).map((reservation) => ({
+        ...reservation,
+        truckId: truck.id,
+        truckName: truck.name,
+        totalQuantity: Number(truck.totalQuantity || 0)
+      }))
+    )
+    .sort((a, b) => `${a.startDate}-${a.truckName}`.localeCompare(`${b.startDate}-${b.truckName}`));
+
+  const peakReservedUnits = schedule.trucks.reduce((sum, truck) => {
+    const peak = buildAgendaDayLookup(truck, schedule.dates).peakReservedQuantity;
+    return sum + peak;
+  }, 0);
+  const trucksWithReservations = schedule.trucks.filter((truck) => (truck.reservations || []).length > 0).length;
+  const totalTruckUnits = schedule.trucks.reduce((sum, truck) => sum + Number(truck.totalQuantity || 0), 0);
+
+  const summaryCards = [
+    { label: 'Modelos monitorados', value: schedule.trucks.length, detail: `${totalTruckUnits} unidade(s) na frota`, tone: 'neutral' },
+    { label: 'Reservas abertas', value: flattenedReservations.length, detail: 'Pedidos em andamento no período', tone: 'warning' },
+    { label: 'Caminhões ocupados', value: `${trucksWithReservations}/${schedule.trucks.length}`, detail: 'Modelos com alguma reserva ativa', tone: 'accent' },
+    { label: 'Pico de unidades reservadas', value: peakReservedUnits, detail: 'Soma do maior uso simultâneo por modelo', tone: 'success' }
+  ];
+
+  agendaSummary.innerHTML = summaryCards
+    .map((item) => {
+      return `
+        <article class="summary-card tone-${item.tone}">
+          <span class="summary-label">${escapeHtml(item.label)}</span>
+          <strong class="summary-value">${escapeHtml(String(item.value))}</strong>
+          <span class="summary-detail">${escapeHtml(item.detail)}</span>
+        </article>
+      `;
+    })
+    .join('');
+
+  renderAgendaCalendar(schedule);
+
+  agendaReservationsList.innerHTML = buildOverviewListHtml(
+    flattenedReservations.map((reservation) => ({
+      title: `${reservation.truckName} • Pedido #${reservation.orderId}`,
+      meta: `${formatDateRange(reservation.startDate, reservation.endDate)} • ${reservation.createdByName} • ${reservation.quantityReserved} unidade(s)`,
+      tone: 'warning'
+    })),
+    'Nenhuma reserva aberta no período selecionado.'
+  );
+
+  agendaTrucksList.innerHTML = buildOverviewListHtml(
+    schedule.trucks.map((truck) => {
+      const dayInfo = buildAgendaDayLookup(truck, schedule.dates);
+      const peakFree = Math.max(0, Number(truck.totalQuantity || 0) - dayInfo.peakReservedQuantity);
+      return {
+        title: truck.name,
+        meta: `${dayInfo.busyDays} dia(s) ocupado(s) • pico ${dayInfo.peakReservedQuantity}/${truck.totalQuantity} reservados • mínimo ${peakFree} livre(s)`,
+        tone: dayInfo.busyDays ? 'warning' : 'success'
+      };
+    }),
+    'Nenhum caminhão cadastrado.'
+  );
+}
+
+function renderAgendaCalendar(schedule) {
+  const headerCells = schedule.dates
+    .map((date) => {
+      return `<th>${escapeHtml(formatAgendaDayHeader(date))}</th>`;
+    })
+    .join('');
+
+  const rowsHtml = schedule.trucks
+    .map((truck) => {
+      const dayLookup = buildAgendaDayLookup(truck, schedule.dates);
+      const cellsHtml = schedule.dates
+        .map((date) => {
+          const info = dayLookup.byDate[date] || { reservedQuantity: 0, ordersCount: 0 };
+          const total = Number(truck.totalQuantity || 0);
+          const available = Math.max(0, total - info.reservedQuantity);
+          const toneClass = info.reservedQuantity <= 0 ? 'agenda-cell-free' : available <= 0 ? 'agenda-cell-full' : 'agenda-cell-partial';
+          const subLabel = info.ordersCount > 0 ? `${info.ordersCount} pedido(s)` : 'livre';
+          return `
+            <td class="${toneClass}">
+              <strong>${available}/${total}</strong>
+              <span>${escapeHtml(subLabel)}</span>
+            </td>
+          `;
+        })
+        .join('');
+
+      return `
+        <tr>
+          <th class="agenda-truck-cell">
+            <strong>${escapeHtml(truck.name)}</strong>
+            <span>${formatVolume(truck.volumeCm3)} • ${truck.totalQuantity} un.</span>
+          </th>
+          ${cellsHtml}
+        </tr>
+      `;
+    })
+    .join('');
+
+  agendaCalendarTable.innerHTML = `
+    <thead>
+      <tr>
+        <th>Caminhão</th>
+        ${headerCells}
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml || '<tr><td colspan="100%">Nenhum caminhão cadastrado.</td></tr>'}
+    </tbody>
+  `;
+}
+
+function buildAgendaDayLookup(truck, dates) {
+  const byDate = {};
+  let busyDays = 0;
+  let peakReservedQuantity = 0;
+
+  for (const date of dates) {
+    const overlapping = (truck.reservations || []).filter((reservation) => reservation.startDate <= date && reservation.endDate >= date);
+    const reservedQuantity = overlapping.reduce((sum, reservation) => sum + Number(reservation.quantityReserved || 0), 0);
+    const ordersCount = overlapping.length;
+    byDate[date] = { reservedQuantity, ordersCount };
+    if (reservedQuantity > 0) busyDays += 1;
+    if (reservedQuantity > peakReservedQuantity) {
+      peakReservedQuantity = reservedQuantity;
+    }
+  }
+
+  return { byDate, busyDays, peakReservedQuantity };
 }
 
 function renderCargoBuilder() {
@@ -1679,6 +1852,45 @@ async function onOrderDateChange() {
   manualResultBox.classList.add('hidden');
 }
 
+async function onAgendaRangeChange() {
+  const range = getSelectedAgendaRange(false);
+  if (!range) {
+    state.truckSchedule = null;
+    renderTruckSchedule();
+    return;
+  }
+
+  state.agendaStartDate = range.startDate;
+  state.agendaEndDate = range.endDate;
+  await loadTruckSchedule(true);
+  renderTruckSchedule();
+}
+
+async function loadTruckSchedule(showErrorToast) {
+  const range = getSelectedAgendaRange(showErrorToast);
+  if (!range) {
+    state.truckSchedule = null;
+    return;
+  }
+
+  state.agendaStartDate = range.startDate;
+  state.agendaEndDate = range.endDate;
+
+  const response = await api(
+    `/api/truck-schedule?startDate=${encodeURIComponent(range.startDate)}&endDate=${encodeURIComponent(range.endDate)}`
+  );
+
+  if (!response.ok) {
+    state.truckSchedule = null;
+    if (showErrorToast) {
+      showToast(response.data.error || 'Não foi possível carregar a agenda da frota.');
+    }
+    return;
+  }
+
+  state.truckSchedule = response.data;
+}
+
 async function syncTruckAvailabilityForRange(showErrorToast) {
   const range = getSelectedOrderRange(false);
   if (!range) {
@@ -1742,6 +1954,29 @@ function getSelectedOrderRange(showToastOnError) {
   return { startDate, endDate };
 }
 
+function getSelectedAgendaRange(showToastOnError) {
+  const startDate = String(agendaStartDateInput?.value || state.agendaStartDate || '').trim();
+  const endDate = String(agendaEndDateInput?.value || state.agendaEndDate || '').trim();
+
+  if ((!startDate || !endDate) && showToastOnError) {
+    showToast('Selecione a data inicial e final da agenda.');
+    return null;
+  }
+
+  if (!startDate || !endDate) {
+    return null;
+  }
+
+  if (startDate > endDate) {
+    if (showToastOnError) {
+      showToast('A data final da agenda deve ser maior ou igual à data inicial.');
+    }
+    return null;
+  }
+
+  return { startDate, endDate };
+}
+
 function syncLegacyOrderDateInput() {
   if (!legacyOrderDateInput) return;
   const startDate = String(orderStartDateInput?.value || '').trim();
@@ -1777,6 +2012,12 @@ function getTodayDateIso() {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${now.getFullYear()}-${month}-${day}`;
+}
+
+function addDaysIso(dateIso, days) {
+  const date = new Date(`${dateIso}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function renderCalculationResult(targetBox, payload, sourceMode) {
@@ -2148,6 +2389,14 @@ function formatDateRange(startDate, endDate) {
     return formatDate(startDate);
   }
   return `${formatDate(startDate)} ate ${formatDate(endDate)}`;
+}
+
+function formatAgendaDayHeader(dateIso) {
+  const date = new Date(`${dateIso}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return dateIso;
+  const weekday = date.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
+  const dayMonth = date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  return `${weekday} ${dayMonth}`;
 }
 
 function formatOrderRange(order) {

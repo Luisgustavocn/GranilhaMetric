@@ -70,6 +70,7 @@
                   <option value="inicio-section">Início</option>
                   <option value="calculadora-section">Lançar pedido</option>
                   <option value="pedidos-section">Pedidos</option>
+                  <option value="agenda-section">Agenda</option>
                   <option value="latas-section">Latas</option>
                   <option value="caminhoes-section">Caminhões</option>
                   <option id="mobile-nav-admin-option" value="admin-panel">Administração</option>
@@ -79,6 +80,7 @@
                 <li class="active" data-target="inicio-section">Início</li>
                 <li data-target="calculadora-section">Lançar pedido</li>
                 <li data-target="pedidos-section">Pedidos</li>
+                <li data-target="agenda-section">Agenda</li>
                 <li data-target="latas-section">Latas</li>
                 <li data-target="caminhoes-section">Caminhões</li>
                 <li id="nav-admin-item" data-target="admin-panel">Administração</li>
@@ -293,6 +295,64 @@
                   </table>
                 </div>
               </section>
+            </section>
+
+            <section id="agenda-section" class="view-pane hidden">
+              <article class="card agenda-panel">
+                <div class="section-head">
+                  <div>
+                    <span class="eyebrow">Frota</span>
+                    <h2>Agenda da frota</h2>
+                    <p>Consulte a ocupação dos caminhões por período e acompanhe reservas abertas em andamento.</p>
+                  </div>
+                </div>
+
+                <div class="agenda-toolbar">
+                  <label>Data inicial
+                    <input id="agenda-start-date-input" type="date" />
+                  </label>
+                  <label>Data final
+                    <input id="agenda-end-date-input" type="date" />
+                  </label>
+                  <button id="agenda-refresh-btn" type="button" class="btn btn-primary">Atualizar agenda</button>
+                </div>
+
+                <div id="agenda-summary" class="summary-grid agenda-summary"></div>
+
+                <div class="card agenda-calendar-card">
+                  <div class="section-head">
+                    <div>
+                      <h3>Calendário de ocupação</h3>
+                      <p id="agenda-range-label" class="hint">Selecione um período para carregar a agenda.</p>
+                    </div>
+                  </div>
+                  <div class="table-wrap agenda-table-wrap">
+                    <table id="agenda-calendar-table" class="agenda-table"></table>
+                  </div>
+                </div>
+
+                <div class="home-grid agenda-grid">
+                  <article class="card">
+                    <div class="section-head">
+                      <div>
+                        <h3>Reservas no período</h3>
+                        <p class="hint">Pedidos em aberto que utilizam a frota no intervalo informado.</p>
+                      </div>
+                    </div>
+                    <div id="agenda-reservations-list" class="overview-list"></div>
+                  </article>
+
+                  <article class="card">
+                    <div class="section-head">
+                      <div>
+                        <h3>Disponibilidade por caminhão</h3>
+                        <p class="hint">Resumo consolidado de uso e unidades livres na janela consultada.</p>
+                      </div>
+                    </div>
+                    <div id="agenda-trucks-list" class="overview-list"></div>
+                  </article>
+                </div>
+              </article>
             </section>
 
             <section id="admin-panel" class="view-pane admin-panel hidden">

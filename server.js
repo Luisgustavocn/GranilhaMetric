@@ -332,6 +332,17 @@ async function handleApi(req, res, url) {
     );
   }
 
+  if (method === 'GET' && url.pathname === '/api/truck-schedule') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    const fallbackDate = url.searchParams.get('date');
+    return getTruckSchedule(
+      res,
+      url.searchParams.get('startDate') || fallbackDate,
+      url.searchParams.get('endDate') || fallbackDate
+    );
+  }
+
   if (orderIdMatch && method === 'GET') {
     const user = requireAuth(req, res);
     if (!user) return;
@@ -980,6 +991,71 @@ function getTruckAvailability(res, startDateRaw, endDateRaw) {
   });
 }
 
+function getTruckSchedule(res, startDateRaw, endDateRaw) {
+  const dateRange = parseDateRange(startDateRaw, endDateRaw);
+  if (dateRange.error) {
+    return sendJson(res, 400, { error: dateRange.error });
+  }
+
+  const dates = buildDateSeries(dateRange.startDate, dateRange.endDate);
+  if (dates.length > 45) {
+    return sendJson(res, 400, { error: 'A agenda aceita no máximo 45 dias por consulta.' });
+  }
+
+  const trucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+  const reservations = db.prepare(`
+    SELECT
+      ot.truck_id,
+      ot.truck_name,
+      ot.order_id,
+      ot.quantity_reserved,
+      o.created_by_name,
+      o.start_date,
+      o.end_date,
+      o.total_cans,
+      o.total_volume_cm3,
+      o.created_at
+    FROM order_trucks ot
+    INNER JOIN orders o ON o.id = ot.order_id
+    WHERE o.status = 'open'
+      AND o.start_date <= ?
+      AND o.end_date >= ?
+    ORDER BY ot.truck_name ASC, o.start_date ASC, o.id ASC
+  `).all(dateRange.endDate, dateRange.startDate);
+
+  const reservationsByTruckId = new Map();
+  for (const reservation of reservations) {
+    if (!reservationsByTruckId.has(reservation.truck_id)) {
+      reservationsByTruckId.set(reservation.truck_id, []);
+    }
+    reservationsByTruckId.get(reservation.truck_id).push({
+      orderId: reservation.order_id,
+      truckId: reservation.truck_id,
+      truckName: reservation.truck_name,
+      quantityReserved: Number(reservation.quantity_reserved || 1),
+      createdByName: reservation.created_by_name,
+      startDate: reservation.start_date,
+      endDate: reservation.end_date,
+      totalCans: Number(reservation.total_cans || 0),
+      totalVolumeCm3: Number(reservation.total_volume_cm3 || 0),
+      createdAt: reservation.created_at
+    });
+  }
+
+  sendJson(res, 200, {
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    dates,
+    trucks: trucks.map((truck) => ({
+      id: truck.id,
+      name: truck.name,
+      totalQuantity: Number(truck.quantity || 1),
+      volumeCm3: Number(truck.volume_cm3 || 0),
+      reservations: reservationsByTruckId.get(truck.id) || []
+    }))
+  });
+}
+
 function parseDateValue(value, label) {
   const date = String(value || '').trim();
   if (!date) {
@@ -1013,6 +1089,19 @@ function parseDateRange(startValue, endValue) {
     startDate: startDate.value,
     endDate: endDate.value
   };
+}
+
+function buildDateSeries(startDate, endDate) {
+  const dates = [];
+  const cursor = new Date(`${startDate}T00:00:00`);
+  const limit = new Date(`${endDate}T00:00:00`);
+
+  while (cursor <= limit) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return dates;
 }
 
 function getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId = null) {
