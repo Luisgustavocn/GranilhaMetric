@@ -21,7 +21,8 @@ const state = {
   nextManualAllocationId: 2,
   lastCalculation: null,
   currentView: 'inicio-section',
-  modal: null
+  modal: null,
+  confirmModal: null
 };
 
 const loginCard = document.getElementById('login-card');
@@ -66,6 +67,12 @@ const entityModalOverlay = document.getElementById('entity-modal-overlay');
 const closeEntityModalBtn = document.getElementById('close-entity-modal-btn');
 const entityModalTitle = document.getElementById('entity-modal-title');
 const entityModalContent = document.getElementById('entity-modal-content');
+const confirmModalOverlay = document.getElementById('confirm-modal-overlay');
+const closeConfirmModalBtn = document.getElementById('close-confirm-modal-btn');
+const confirmModalTitle = document.getElementById('confirm-modal-title');
+const confirmModalContent = document.getElementById('confirm-modal-content');
+const confirmModalCancelBtn = document.getElementById('confirm-modal-cancel-btn');
+const confirmModalConfirmBtn = document.getElementById('confirm-modal-confirm-btn');
 const calculationModeInputs = document.querySelectorAll('input[name="calculationMode"]');
 const sideNavItems = document.querySelectorAll('.nav-list li[data-target]');
 const navAdminItem = document.getElementById('nav-admin-item');
@@ -112,6 +119,20 @@ function bindEvents() {
   entityModalOverlay.addEventListener('click', (event) => {
     if (event.target === entityModalOverlay) {
       closeEntityModal();
+    }
+  });
+  closeConfirmModalBtn.addEventListener('click', () => closeConfirmModal(false));
+  confirmModalCancelBtn.addEventListener('click', () => closeConfirmModal(false));
+  confirmModalOverlay.addEventListener('click', (event) => {
+    if (event.target === confirmModalOverlay) {
+      closeConfirmModal(false);
+    }
+  });
+  confirmModalConfirmBtn.addEventListener('click', async () => {
+    const handler = state.confirmModal?.onConfirm;
+    closeConfirmModal(true);
+    if (typeof handler === 'function') {
+      await handler();
     }
   });
   sideNavItems.forEach((item) => {
@@ -688,15 +709,16 @@ async function openOrderModal(orderId) {
     ? `<ul>${trucks.map((truck) => `<li>${Number(truck.quantity_reserved || 1)}x ${escapeHtml(truck.truck_name)}</li>`).join('')}</ul>`
     : '<p>Nenhum caminhao vinculado.</p>';
 
-  const adminActions =
-    state.user?.role === 'admin'
-      ? `
-        <div class="modal-actions">
-          ${order.status === 'open' ? '<button type="button" id="modal-conclude-order-btn" class="btn btn-primary">Concluir pedido</button>' : ''}
-          <button type="button" id="modal-delete-order-btn" class="row-action danger">Excluir pedido</button>
-        </div>
-      `
-      : '';
+  const canManage = canManageOrderOnClient(order);
+  const modalActions = canManage || state.user?.role === 'admin'
+    ? `
+      <div class="modal-actions">
+        ${order.status === 'open' && canManage ? '<button type="button" id="modal-edit-order-btn" class="btn btn-primary">Editar pedido</button>' : ''}
+        ${order.status === 'open' && state.user?.role === 'admin' ? '<button type="button" id="modal-conclude-order-btn" class="btn btn-primary">Concluir pedido</button>' : ''}
+        ${canManage ? '<button type="button" id="modal-delete-order-btn" class="row-action danger">Excluir pedido</button>' : ''}
+      </div>
+    `
+    : '';
 
   entityModalContent.innerHTML = `
     <p><strong>Status:</strong> ${order.status === 'completed' ? 'Concluido' : 'Aberto'}</p>
@@ -720,41 +742,210 @@ async function openOrderModal(orderId) {
       </thead>
       <tbody>${itemsRows || '<tr><td colspan="5">Sem itens.</td></tr>'}</tbody>
     </table>
-    ${adminActions}
+    ${modalActions}
   `;
 
   entityModalOverlay.classList.remove('hidden');
 
+  const editBtn = document.getElementById('modal-edit-order-btn');
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      openOrderEditModal(order, items);
+    });
+  }
+
   const concludeBtn = document.getElementById('modal-conclude-order-btn');
   if (concludeBtn) {
-    concludeBtn.addEventListener('click', async () => {
-      const concludeRes = await api(`/api/orders/${order.id}/conclude`, { method: 'POST', body: {} });
-      if (!concludeRes.ok) {
-        showToast(concludeRes.data.error || 'Nao foi possivel concluir o pedido.');
-        return;
-      }
-      showToast(`Pedido #${order.id} concluido.`);
-      await loadData();
-      renderApp();
-      openOrderModal(order.id);
+    concludeBtn.addEventListener('click', () => {
+      openConfirmModal({
+        title: 'Concluir pedido',
+        message: `Confirma a conclusao do pedido #${order.id}? Essa acao libera os caminhoes reservados imediatamente.`,
+        confirmLabel: 'Concluir pedido',
+        onConfirm: async () => {
+          const concludeRes = await api(`/api/orders/${order.id}/conclude`, { method: 'POST', body: {} });
+          if (!concludeRes.ok) {
+            showToast(concludeRes.data.error || 'Nao foi possivel concluir o pedido.');
+            return;
+          }
+          showToast(`Pedido #${order.id} concluido.`);
+          await loadData();
+          renderApp();
+          openOrderModal(order.id);
+        }
+      });
     });
   }
 
   const deleteBtn = document.getElementById('modal-delete-order-btn');
   if (deleteBtn) {
-    deleteBtn.addEventListener('click', async () => {
-      if (!window.confirm(`Excluir o pedido #${order.id}?`)) return;
-      const deleteRes = await api(`/api/orders/${order.id}`, { method: 'DELETE' });
-      if (!deleteRes.ok) {
-        showToast(deleteRes.data.error || 'Nao foi possivel excluir o pedido.');
-        return;
-      }
-      showToast(`Pedido #${order.id} excluido.`);
-      closeEntityModal();
-      await loadData();
-      renderApp();
+    deleteBtn.addEventListener('click', () => {
+      openConfirmModal({
+        title: 'Excluir pedido',
+        message: `Confirma a exclusao do pedido #${order.id}? Essa acao nao pode ser desfeita.`,
+        confirmLabel: 'Excluir pedido',
+        danger: true,
+        onConfirm: async () => {
+          const deleteRes = await api(`/api/orders/${order.id}`, { method: 'DELETE' });
+          if (!deleteRes.ok) {
+            showToast(deleteRes.data.error || 'Nao foi possivel excluir o pedido.');
+            return;
+          }
+          showToast(`Pedido #${order.id} excluido.`);
+          closeEntityModal();
+          await loadData();
+          renderApp();
+        }
+      });
     });
   }
+}
+
+function openOrderEditModal(order, items) {
+  const canManage = canManageOrderOnClient(order);
+  if (!canManage) {
+    showToast('Voce nao tem permissao para editar este pedido.');
+    return;
+  }
+
+  const initialRows = items.length
+    ? items.map((item, index) => ({
+        id: index + 1,
+        canId: Number(item.can_id),
+        quantity: Number(item.quantity)
+      }))
+    : [{ id: 1, canId: state.cans[0]?.id ?? null, quantity: 1 }];
+
+  state.modal = { type: 'order-edit', id: order.id };
+  entityModalTitle.textContent = `Editar pedido #${order.id}`;
+  entityModalContent.innerHTML = `
+    <form id="modal-order-form" class="grid-form">
+      <label>Data inicial
+        <input name="startDate" type="date" value="${escapeHtml(getOrderStartDate(order) || '')}" required />
+      </label>
+      <label>Data final
+        <input name="endDate" type="date" value="${escapeHtml(getOrderEndDate(order) || '')}" required />
+      </label>
+      <div class="form-section">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Itens</span>
+            <h3>Composicao do pedido</h3>
+          </div>
+          <button type="button" id="modal-add-order-item-btn" class="row-action">Adicionar item</button>
+        </div>
+        <div id="modal-order-items-list" class="allocation-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Salvar pedido</button>
+        <button type="button" id="modal-cancel-order-edit-btn" class="row-action">Cancelar</button>
+      </div>
+    </form>
+  `;
+  entityModalOverlay.classList.remove('hidden');
+
+  const form = document.getElementById('modal-order-form');
+  const itemsList = document.getElementById('modal-order-items-list');
+  const addItemBtn = document.getElementById('modal-add-order-item-btn');
+  const cancelBtn = document.getElementById('modal-cancel-order-edit-btn');
+  let nextRowId = initialRows.length + 1;
+  const rows = [...initialRows];
+
+  const renderRows = () => {
+    itemsList.innerHTML = '';
+    rows.forEach((row) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'allocation-row';
+
+      const canLabel = document.createElement('label');
+      canLabel.textContent = 'Lata';
+      const canSelect = document.createElement('select');
+      state.cans.forEach((can) => {
+        const option = document.createElement('option');
+        option.value = String(can.id);
+        option.textContent = `${can.name} (${formatVolume(can.volume_cm3)})`;
+        canSelect.appendChild(option);
+      });
+      canSelect.value = String(row.canId ?? state.cans[0]?.id ?? '');
+      canSelect.addEventListener('change', () => {
+        row.canId = Number(canSelect.value);
+      });
+      canLabel.appendChild(canSelect);
+
+      const qtyLabel = document.createElement('label');
+      qtyLabel.textContent = 'Qtd';
+      const qtyInput = document.createElement('input');
+      qtyInput.type = 'number';
+      qtyInput.min = '1';
+      qtyInput.step = '1';
+      qtyInput.value = String(row.quantity || 1);
+      qtyInput.addEventListener('input', () => {
+        row.quantity = Math.max(1, Number(qtyInput.value || 1));
+        qtyInput.value = String(row.quantity);
+      });
+      qtyLabel.appendChild(qtyInput);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'row-action danger';
+      removeBtn.textContent = 'Remover';
+      removeBtn.addEventListener('click', () => {
+        if (rows.length <= 1) {
+          showToast('Mantenha ao menos um item no pedido.');
+          return;
+        }
+        const index = rows.findIndex((entry) => entry.id === row.id);
+        if (index >= 0) rows.splice(index, 1);
+        renderRows();
+      });
+
+      wrapper.appendChild(canLabel);
+      wrapper.appendChild(qtyLabel);
+      wrapper.appendChild(removeBtn);
+      itemsList.appendChild(wrapper);
+    });
+  };
+
+  renderRows();
+
+  addItemBtn.addEventListener('click', () => {
+    rows.push({
+      id: nextRowId++,
+      canId: state.cans[0]?.id ?? null,
+      quantity: 1
+    });
+    renderRows();
+  });
+
+  cancelBtn.addEventListener('click', () => openOrderModal(order.id));
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const payload = {
+      startDate: String(formData.get('startDate') || '').trim(),
+      endDate: String(formData.get('endDate') || '').trim(),
+      items: rows
+        .map((row) => ({
+          canId: Number(row.canId),
+          quantity: Number(row.quantity)
+        }))
+        .filter((row) => Number.isInteger(row.canId) && Number.isInteger(row.quantity) && row.quantity > 0)
+    };
+
+    const response = await api(`/api/orders/${order.id}`, {
+      method: 'PUT',
+      body: payload
+    });
+    if (!response.ok) {
+      showToast(response.data.error || 'Nao foi possivel atualizar o pedido.');
+      return;
+    }
+
+    showToast(`Pedido #${order.id} atualizado.`);
+    await loadData();
+    renderApp();
+    openOrderModal(order.id);
+  });
 }
 
 function openCanModal(canId) {
@@ -1038,9 +1229,30 @@ function closeEntityModal() {
 }
 
 function onGlobalKeydown(event) {
+  if (event.key === 'Escape' && !confirmModalOverlay.classList.contains('hidden')) {
+    closeConfirmModal(false);
+    return;
+  }
+
   if (event.key === 'Escape' && !entityModalOverlay.classList.contains('hidden')) {
     closeEntityModal();
   }
+}
+
+function openConfirmModal({ title, message, confirmLabel = 'Confirmar', danger = false, onConfirm }) {
+  state.confirmModal = { onConfirm };
+  confirmModalTitle.textContent = title || 'Confirmar acao';
+  confirmModalContent.innerHTML = `<p>${escapeHtml(message || 'Deseja continuar?')}</p>`;
+  confirmModalConfirmBtn.textContent = confirmLabel;
+  confirmModalConfirmBtn.classList.toggle('btn-danger', danger);
+  confirmModalConfirmBtn.classList.toggle('btn-primary', !danger);
+  confirmModalOverlay.classList.remove('hidden');
+}
+
+function closeConfirmModal(_confirmed = false) {
+  confirmModalOverlay.classList.add('hidden');
+  confirmModalContent.innerHTML = '';
+  state.confirmModal = null;
 }
 
 async function onCreateUser(event) {
@@ -1839,6 +2051,11 @@ function getTodayAvailabilityInfo(truckId) {
       availableQuantity: Number(fallbackTruck?.quantity || 0)
     }
   );
+}
+
+function canManageOrderOnClient(order) {
+  if (!state.user || !order) return false;
+  return state.user.role === 'admin' || Number(order.created_by_user_id) === Number(state.user.id);
 }
 
 function getOrderStartDate(order) {

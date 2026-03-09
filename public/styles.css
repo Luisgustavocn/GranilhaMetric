@@ -735,6 +735,26 @@ tbody tr:last-child td {
   flex-wrap: wrap;
 }
 
+.modal-card-compact {
+  max-width: 460px;
+}
+
+.confirm-modal-content {
+  font-size: 0.98rem;
+  color: var(--ink-soft);
+}
+
+.btn-danger {
+  background: #b63131;
+  border-color: #b63131;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #962828;
+  border-color: #962828;
+}
+
 .toast {
   position: fixed;
   right: 16px;

@@ -338,6 +338,13 @@ async function handleApi(req, res, url) {
     return getOrderDetails(res, Number(orderIdMatch[1]));
   }
 
+  if (orderIdMatch && method === 'PUT') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    return updateOrder(user, res, Number(orderIdMatch[1]), body);
+  }
+
   if (orderConcludeMatch && method === 'POST') {
     const user = requireAdmin(req, res);
     if (!user) return;
@@ -345,9 +352,9 @@ async function handleApi(req, res, url) {
   }
 
   if (orderIdMatch && method === 'DELETE') {
-    const user = requireAdmin(req, res);
+    const user = requireAuth(req, res);
     if (!user) return;
-    return deleteOrder(res, Number(orderIdMatch[1]));
+    return deleteOrder(user, res, Number(orderIdMatch[1]));
   }
 
   if (method === 'POST' && url.pathname === '/api/calculate') {
@@ -799,6 +806,107 @@ function getOrderDetails(res, orderId) {
   sendJson(res, 200, { order, items, trucks });
 }
 
+function updateOrder(currentUser, res, orderId, body) {
+  const existing = db.prepare(`
+    SELECT
+      id,
+      created_by_user_id,
+      status
+    FROM orders
+    WHERE id = ?
+  `).get(orderId);
+
+  if (!existing) {
+    return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+  }
+
+  if (!canManageOrder(currentUser, existing)) {
+    return sendJson(res, 403, { error: 'Voce nao tem permissao para editar este pedido.' });
+  }
+
+  if (existing.status !== 'open') {
+    return sendJson(res, 400, { error: 'Somente pedidos em aberto podem ser editados.' });
+  }
+
+  const load = buildLoadSummary(body?.items);
+  if (load.error) {
+    return sendJson(res, load.status || 400, { error: load.error });
+  }
+
+  const fallbackDate = body?.scheduledDate;
+  const dateRange = parseDateRange(body?.startDate || fallbackDate, body?.endDate || fallbackDate);
+  if (dateRange.error) {
+    return sendJson(res, 400, { error: dateRange.error });
+  }
+
+  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate, orderId);
+  const availableTrucks = [...availability.values()].filter((truck) => truck.availableQuantity > 0);
+  if (!availableTrucks.length) {
+    return sendJson(res, 422, { error: `Nao ha caminhoes disponiveis entre ${dateRange.startDate} e ${dateRange.endDate}.` });
+  }
+
+  const autoAllocation = findAutomaticAllocation(load.totalVolumeCm3, availableTrucks, [...availability.values()]);
+  if (!autoAllocation || !autoAllocation.allocation?.fits) {
+    return sendJson(res, 422, { error: 'Nao foi possivel recalcular a frota para esse pedido com os dados informados.' });
+  }
+
+  try {
+    db.exec('BEGIN');
+    db.prepare(`
+      UPDATE orders
+      SET scheduled_date = ?,
+          start_date = ?,
+          end_date = ?,
+          total_cans = ?,
+          total_volume_cm3 = ?
+      WHERE id = ?
+    `).run(dateRange.startDate, dateRange.startDate, dateRange.endDate, load.totalCans, load.totalVolumeCm3, orderId);
+
+    db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderId);
+    db.prepare('DELETE FROM order_trucks WHERE order_id = ?').run(orderId);
+
+    const insertItem = db.prepare(`
+      INSERT INTO order_items (
+        order_id,
+        can_id,
+        can_name,
+        can_shape,
+        quantity,
+        unit_volume_cm3,
+        total_volume_cm3
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const item of load.breakdown) {
+      insertItem.run(
+        orderId,
+        item.canId,
+        item.canName,
+        item.canShape,
+        item.quantity,
+        item.unitVolumeCm3,
+        item.totalVolumeCm3
+      );
+    }
+
+    const insertOrderTruck = db.prepare(`
+      INSERT INTO order_trucks (order_id, truck_id, truck_name, quantity_reserved)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (const allocation of autoAllocation.allocation.trucks) {
+      insertOrderTruck.run(orderId, allocation.truckId, allocation.name, allocation.quantity);
+    }
+
+    db.exec('COMMIT');
+    return sendJson(res, 200, { ok: true });
+  } catch (error) {
+    db.exec('ROLLBACK');
+    console.error(error);
+    return sendJson(res, 500, { error: 'Nao foi possivel atualizar o pedido.' });
+  }
+}
+
 function concludeOrder(currentUser, res, orderId) {
   const existing = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(orderId);
   if (!existing) {
@@ -821,10 +929,14 @@ function concludeOrder(currentUser, res, orderId) {
   sendJson(res, 200, { ok: true });
 }
 
-function deleteOrder(res, orderId) {
-  const orderExists = db.prepare('SELECT id FROM orders WHERE id = ?').get(orderId);
+function deleteOrder(currentUser, res, orderId) {
+  const orderExists = db.prepare('SELECT id, created_by_user_id FROM orders WHERE id = ?').get(orderId);
   if (!orderExists) {
     return sendJson(res, 404, { error: 'Pedido nao encontrado.' });
+  }
+
+  if (!canManageOrder(currentUser, orderExists)) {
+    return sendJson(res, 403, { error: 'Voce nao tem permissao para excluir este pedido.' });
   }
 
   try {
@@ -839,6 +951,11 @@ function deleteOrder(res, orderId) {
     console.error(error);
     sendJson(res, 500, { error: 'Nao foi possivel excluir o pedido.' });
   }
+}
+
+function canManageOrder(user, order) {
+  if (!user || !order) return false;
+  return user.role === 'admin' || Number(order.created_by_user_id) === Number(user.id);
 }
 
 function getTruckAvailability(res, startDateRaw, endDateRaw) {
@@ -898,8 +1015,8 @@ function parseDateRange(startValue, endValue) {
   };
 }
 
-function getUnavailableTruckRowsForRange(startDate, endDate) {
-  return db.prepare(`
+function getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId = null) {
+  const sql = `
     SELECT
       ot.truck_id,
       ot.truck_name,
@@ -913,17 +1030,22 @@ function getUnavailableTruckRowsForRange(startDate, endDate) {
     WHERE o.status = 'open'
       AND o.start_date <= ?
       AND o.end_date >= ?
+      ${excludedOrderId ? 'AND o.id <> ?' : ''}
     ORDER BY ot.truck_name ASC
-  `).all(endDate, startDate);
+  `;
+
+  return excludedOrderId
+    ? db.prepare(sql).all(endDate, startDate, excludedOrderId)
+    : db.prepare(sql).all(endDate, startDate);
 }
 
-function getUnavailableTruckIdsForRange(startDate, endDate) {
-  const rows = getUnavailableTruckRowsForRange(startDate, endDate);
+function getUnavailableTruckIdsForRange(startDate, endDate, excludedOrderId = null) {
+  const rows = getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId);
   return new Set(rows.map((row) => row.truck_id));
 }
 
-function buildTruckAvailabilityMap(trucks, startDate, endDate) {
-  const reservedRows = startDate && endDate ? getUnavailableTruckRowsForRange(startDate, endDate) : [];
+function buildTruckAvailabilityMap(trucks, startDate, endDate, excludedOrderId = null) {
+  const reservedRows = startDate && endDate ? getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId) : [];
   const reservedByTruckId = new Map();
   for (const row of reservedRows) {
     reservedByTruckId.set(row.truck_id, (reservedByTruckId.get(row.truck_id) || 0) + Number(row.quantity_reserved || 1));
@@ -937,6 +1059,42 @@ function buildTruckAvailabilityMap(trucks, startDate, endDate) {
       return [truck.id, { ...truck, totalQuantity, reservedQuantity, availableQuantity }];
     })
   );
+}
+
+function findAutomaticAllocation(totalVolumeCm3, availableTrucks, allTruckOptions = availableTrucks) {
+  const unavailableTruckIds = new Set(
+    allTruckOptions.filter((truck) => Number(truck.availableQuantity || 0) <= 0).map((truck) => truck.id)
+  );
+  const options = buildTruckOptions(allTruckOptions, totalVolumeCm3, unavailableTruckIds);
+  const bestSingle = options
+    .filter((truck) => truck.isAvailable && truck.fits)
+    .sort((a, b) => a.leftoverCm3 - b.leftoverCm3)[0];
+
+  if (bestSingle) {
+    return {
+      strategy: 'single',
+      options,
+      allocation: buildAllocationResult(totalVolumeCm3, [
+        {
+          truckId: bestSingle.id,
+          name: bestSingle.name,
+          quantity: 1,
+          unitVolumeCm3: bestSingle.volume_cm3
+        }
+      ])
+    };
+  }
+
+  const fleet = findBestFleetForAutomatic(totalVolumeCm3, availableTrucks);
+  if (!fleet) {
+    return null;
+  }
+
+  return {
+    strategy: 'multi',
+    options,
+    allocation: buildAllocationResult(totalVolumeCm3, fleet.allocations)
+  };
 }
 
 function parseOrderTruckSelection(rawTrucks, totalVolumeCm3, availability = new Map()) {
@@ -1088,21 +1246,8 @@ function calculateLoad(res, body) {
 }
 
 function calculateAutomaticLoad(res, load, trucks, context = {}) {
-  const options = buildTruckOptions(context.allTrucks || trucks, load.totalVolumeCm3, context.unavailableTruckIds || new Set());
-  const bestSingle = options
-    .filter((truck) => truck.isAvailable && truck.fits)
-    .sort((a, b) => a.leftoverCm3 - b.leftoverCm3)[0];
-
-  if (bestSingle) {
-    const allocation = buildAllocationResult(load.totalVolumeCm3, [
-      {
-        truckId: bestSingle.id,
-        name: bestSingle.name,
-        quantity: 1,
-        unitVolumeCm3: bestSingle.volume_cm3
-      }
-    ]);
-
+  const automatic = findAutomaticAllocation(load.totalVolumeCm3, trucks, context.allTrucks || trucks);
+  if (automatic?.strategy === 'single') {
     return sendJson(res, 200, {
       mode: 'automatic',
       strategy: 'single',
@@ -1111,13 +1256,12 @@ function calculateAutomaticLoad(res, load, trucks, context = {}) {
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
-      options,
-      allocation
+      options: automatic.options,
+      allocation: automatic.allocation
     });
   }
 
-  const fleet = findBestFleetForAutomatic(load.totalVolumeCm3, trucks);
-  if (!fleet) {
+  if (!automatic) {
     return sendJson(res, 422, {
       error: 'Nao foi possivel encontrar combinacao de caminhoes para comportar a carga.',
       startDate: context.startDate || null,
@@ -1125,11 +1269,9 @@ function calculateAutomaticLoad(res, load, trucks, context = {}) {
       totalVolumeCm3: load.totalVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
-      options
+      options: buildTruckOptions(context.allTrucks || trucks, load.totalVolumeCm3, context.unavailableTruckIds || new Set())
     });
   }
-
-  const allocation = buildAllocationResult(load.totalVolumeCm3, fleet.allocations);
 
   return sendJson(res, 200, {
     mode: 'automatic',
@@ -1139,8 +1281,8 @@ function calculateAutomaticLoad(res, load, trucks, context = {}) {
     totalVolumeCm3: load.totalVolumeCm3,
     totalCans: load.totalCans,
     breakdown: load.breakdown,
-    options,
-    allocation
+    options: automatic.options,
+    allocation: automatic.allocation
   });
 }
 
