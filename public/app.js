@@ -102,6 +102,7 @@ const inicioTrucksList = document.getElementById('inicio-trucks-list');
 const inicioAlertsList = document.getElementById('inicio-alerts-list');
 const inicioCapacityList = document.getElementById('inicio-capacity-list');
 const inicioDateLabel = document.getElementById('inicio-date-label');
+const inicioChartsGrid = document.getElementById('inicio-charts-grid');
 const agendaSummary = document.getElementById('agenda-summary');
 const agendaRangeLabel = document.getElementById('agenda-range-label');
 const agendaCalendarTable = document.getElementById('agenda-calendar-table');
@@ -277,6 +278,7 @@ async function loadData() {
 }
 
 function renderLoggedOut() {
+  document.body.classList.add('login-mode');
   loginCard.classList.remove('hidden');
   appSection.classList.add('hidden');
   adminPanel.classList.add('hidden');
@@ -298,6 +300,7 @@ function renderLoggedOut() {
 }
 
 function renderApp() {
+  document.body.classList.remove('login-mode');
   loginCard.classList.add('hidden');
   appSection.classList.remove('hidden');
   accountMenu?.classList.remove('hidden');
@@ -477,6 +480,150 @@ function renderHomeOverview() {
   ];
 
   inicioCapacityList.innerHTML = buildOverviewListHtml(capacityItems, 'Sem capacidade cadastrada.');
+  renderGeneralCharts();
+}
+
+function renderGeneralCharts() {
+  if (!inicioChartsGrid) return;
+
+  const todayIso = getTodayDateIso();
+  const openOrders = state.orders.filter((order) => order.status === 'open');
+  const completedOrders = state.orders.filter((order) => order.status === 'completed');
+  const totalOrders = state.orders.length;
+  const openOrdersPct = totalOrders > 0 ? (openOrders.length / totalOrders) * 100 : 0;
+
+  const totalTruckUnits = state.trucks.reduce((sum, truck) => sum + Number(truck.quantity || 1), 0);
+  const busyTodayCount = state.trucks.reduce((sum, truck) => {
+    const reserved = Number(getTodayAvailabilityInfo(truck.id).reservedQuantity || 0);
+    return sum + reserved;
+  }, 0);
+  const fleetUsagePct = totalTruckUnits > 0 ? (busyTodayCount / totalTruckUnits) * 100 : 0;
+
+  const weekSeries = buildWeekDemandSeries(todayIso, 7);
+  const maxSeriesValue = Math.max(1, ...weekSeries.map((item) => item.orders));
+  const weekBarsHtml = weekSeries
+    .map((item) => {
+      const percent = Math.max(8, Math.round((item.orders / maxSeriesValue) * 100));
+      return `
+        <div class="chart-bar-item">
+          <span class="chart-bar-value">${item.orders}</span>
+          <div class="chart-bar-track">
+            <span class="chart-bar-fill" style="height: ${percent}%"></span>
+          </div>
+          <span class="chart-bar-label">${escapeHtml(item.label)}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  const canSquareCount = state.cans.filter((can) => can.shape === 'square').length;
+  const canCylinderCount = state.cans.filter((can) => can.shape === 'cylinder').length;
+  const canTotal = state.cans.length;
+  const squarePct = canTotal > 0 ? (canSquareCount / canTotal) * 100 : 0;
+  const cylinderPct = canTotal > 0 ? (canCylinderCount / canTotal) * 100 : 0;
+  const averageCanVolumeLiters =
+    canTotal > 0
+      ? state.cans.reduce((sum, can) => sum + Number(can.volume_cm3 || 0), 0) / canTotal / 1000
+      : 0;
+
+  inicioChartsGrid.innerHTML = `
+    <article class="chart-card">
+      <header class="chart-card-head">
+        <h4>Status dos pedidos</h4>
+        <span>${totalOrders} total</span>
+      </header>
+      <div class="chart-donut-wrap">
+        <div class="chart-donut" style="--chart-fill: ${openOrdersPct.toFixed(2)}%"></div>
+        <div class="chart-donut-legend">
+          <p><strong>${openOrders.length}</strong> aberto(s)</p>
+          <p><strong>${completedOrders.length}</strong> concluído(s)</p>
+          <small>${openOrdersPct.toFixed(0)}% em aberto</small>
+        </div>
+      </div>
+    </article>
+
+    <article class="chart-card">
+      <header class="chart-card-head">
+        <h4>Utilização da frota hoje</h4>
+        <span>${formatDate(todayIso)}</span>
+      </header>
+      <div class="chart-donut-wrap">
+        <div class="chart-donut chart-donut-fleet" style="--chart-fill: ${fleetUsagePct.toFixed(2)}%"></div>
+        <div class="chart-donut-legend">
+          <p><strong>${busyTodayCount}</strong> reservado(s)</p>
+          <p><strong>${Math.max(0, totalTruckUnits - busyTodayCount)}</strong> livre(s)</p>
+          <small>${fleetUsagePct.toFixed(0)}% da frota em uso</small>
+        </div>
+      </div>
+    </article>
+
+    <article class="chart-card chart-card-wide">
+      <header class="chart-card-head">
+        <h4>Demanda dos próximos 7 dias</h4>
+        <span>Pedidos ativos por dia</span>
+      </header>
+      <div class="chart-bars">${weekBarsHtml}</div>
+    </article>
+
+    <article class="chart-card chart-card-wide">
+      <header class="chart-card-head">
+        <h4>Perfil de embalagens</h4>
+        <span>${canTotal} modelo(s)</span>
+      </header>
+      <div class="shape-metrics">
+        <div class="shape-metric-row">
+          <span>Latas quadradas</span>
+          <strong>${canSquareCount} (${squarePct.toFixed(0)}%)</strong>
+        </div>
+        <div class="shape-progress">
+          <span style="width: ${squarePct.toFixed(2)}%"></span>
+        </div>
+        <div class="shape-metric-row">
+          <span>Baldes cilíndricos</span>
+          <strong>${canCylinderCount} (${cylinderPct.toFixed(0)}%)</strong>
+        </div>
+        <div class="shape-progress shape-progress-dark">
+          <span style="width: ${cylinderPct.toFixed(2)}%"></span>
+        </div>
+        <p class="chart-footnote">Volume médio cadastrado: <strong>${averageCanVolumeLiters.toFixed(2)} L</strong></p>
+      </div>
+    </article>
+  `;
+}
+
+function buildWeekDemandSeries(startIso, days = 7) {
+  const startDate = parseDateIso(startIso);
+  if (!startDate) return [];
+  const series = [];
+
+  for (let offset = 0; offset < days; offset += 1) {
+    const cursor = new Date(startDate);
+    cursor.setDate(startDate.getDate() + offset);
+    const cursorIso = toIsoDate(cursor);
+    const count = state.orders.filter((order) => doesOrderOverlapDate(order, cursorIso)).length;
+    series.push({
+      dateIso: cursorIso,
+      label: formatAgendaDayHeader(cursorIso).slice(0, 6),
+      orders: count
+    });
+  }
+
+  return series;
+}
+
+function parseDateIso(dateIso) {
+  if (!dateIso) return null;
+  const date = new Date(`${dateIso}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function toIsoDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function buildOverviewListHtml(items, emptyMessage) {

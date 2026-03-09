@@ -40,17 +40,30 @@
 
     <main class="container">
       <section id="login-card" class="card">
-        <h2>Acesso ao sistema</h2>
-        <p>Entre com seu usuário para usar o painel privado.</p>
-        <form id="login-form" class="grid-form">
-          <label>Email
-            <input type="email" name="email" required />
-          </label>
-          <label>Senha
-            <input type="password" name="password" required />
-          </label>
-          <button type="submit" class="btn btn-primary">Entrar</button>
-        </form>
+        <div class="login-shell">
+          <aside class="login-media">
+            <img src="./Login.png" alt="Caminhão da empresa" />
+            <div class="login-media-overlay">
+              <span class="eyebrow">Granilha Metric</span>
+              <h2>Gestão inteligente de cargas</h2>
+              <p>Planeje pedidos, distribua a frota e reduza conflitos de agenda em um único painel.</p>
+            </div>
+          </aside>
+
+          <div class="login-panel">
+            <h2>Acessar conta</h2>
+            <p>Entre com seu usuário para acessar o sistema privado.</p>
+            <form id="login-form" class="grid-form">
+              <label>Email
+                <input type="email" name="email" required />
+              </label>
+              <label>Senha
+                <input type="password" name="password" required />
+              </label>
+              <button type="submit" class="btn btn-primary">Entrar</button>
+            </form>
+          </div>
+        </div>
       </section>
 
       <section id="app" class="hidden">
@@ -103,6 +116,16 @@
               </div>
 
               <div id="summary-stats" class="summary-grid"></div>
+
+              <section class="card charts-panel">
+                <div class="section-head">
+                  <div>
+                    <span class="eyebrow">Gráficos</span>
+                    <h3>Painel analítico geral</h3>
+                  </div>
+                </div>
+                <div id="inicio-charts-grid" class="charts-grid"></div>
+              </section>
 
               <div class="home-grid">
                 <article class="card">
