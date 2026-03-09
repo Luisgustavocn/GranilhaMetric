@@ -193,9 +193,10 @@ body.login-mode .login-shell {
 
 .container {
   flex: 1;
-  max-width: 1500px;
-  margin: 18px auto 24px;
-  padding: 0 14px;
+  width: 100%;
+  max-width: none;
+  margin: 18px 0 24px;
+  padding: 0 clamp(14px, 2.2vw, 30px);
   min-height: calc(100vh - 86px - 42px);
 }
 
@@ -1316,6 +1317,49 @@ tbody tr:last-child td {
   .login-panel {
     padding: 28px 24px;
   }
+
+  body.login-mode {
+    overflow: auto;
+    background: var(--brand-yellow);
+  }
+
+  body.login-mode .container {
+    min-height: 100dvh;
+    height: auto;
+    padding: 12px;
+    display: grid;
+    place-items: center;
+  }
+
+  body.login-mode #login-card {
+    width: min(560px, 100%);
+    height: auto;
+    min-height: 0;
+    margin: 0;
+    border-radius: 22px;
+    border: 1px solid #c8b103;
+    box-shadow: 0 22px 42px rgba(0, 0, 0, 0.28);
+    background: #ffffff;
+  }
+
+  body.login-mode .login-shell {
+    min-height: 0;
+    height: auto;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+    background: #ffffff;
+  }
+
+  body.login-mode .login-media {
+    min-height: 170px;
+  }
+
+  body.login-mode .login-panel {
+    padding: 22px 18px 18px;
+    align-content: start;
+    border-radius: 0 0 18px 18px;
+    background: #ffffff;
+  }
 }
 
 @media (max-width: 860px) {
@@ -1451,18 +1495,19 @@ tbody tr:last-child td {
     border: 1px solid #c8b103;
     box-shadow: 0 22px 42px rgba(0, 0, 0, 0.38);
     overflow: hidden;
-    background: #fff7cf;
+    background: #ffffff;
   }
 
   body.login-mode .login-shell {
+    min-height: 0;
     height: auto;
     grid-template-columns: 1fr;
     grid-template-rows: auto auto;
-    background: var(--brand-yellow);
+    background: #ffffff;
   }
 
   body.login-mode .login-media {
-    min-height: 108px;
+    min-height: 120px;
   }
 
   body.login-mode .login-media-overlay {
@@ -1483,7 +1528,7 @@ tbody tr:last-child td {
   }
 
   body.login-mode .login-panel {
-    background: #fff7cf;
+    background: #ffffff;
     padding: 18px 16px 16px;
     gap: 12px;
     color: #1a1f2a;
@@ -1499,7 +1544,7 @@ tbody tr:last-child td {
   }
 
   body.login-mode .login-panel p {
-    color: rgba(23, 23, 23, 0.75);
+    color: rgba(23, 23, 23, 0.72);
   }
 
   body.login-mode .login-panel input,
@@ -1588,7 +1633,7 @@ tbody tr:last-child td {
   }
 
   body.login-mode .login-media {
-    min-height: 92px;
+    min-height: 104px;
   }
 
   body.login-mode .login-panel {
