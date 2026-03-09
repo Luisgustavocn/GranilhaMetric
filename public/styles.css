@@ -914,7 +914,9 @@ tbody tr:last-child td {
 @media (max-width: 860px) {
   .topbar {
     flex-wrap: wrap;
-    background: linear-gradient(180deg, var(--brand-black) 0%, #161b26 46%, var(--brand-yellow) 47%, #f6e75f 100%);
+    background:
+      radial-gradient(circle at right center, rgba(243, 218, 0, 0.28), transparent 24%),
+      linear-gradient(135deg, #0f131c 0%, #151b28 52%, #101623 100%);
     gap: 10px;
   }
 
