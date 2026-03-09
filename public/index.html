@@ -274,8 +274,33 @@
             <section id="pedidos-section" class="view-pane hidden">
               <section class="card orders-panel">
                 <div class="orders-panel-header">
-                  <h2>Pedidos lancados</h2>
+                  <h2>Pedidos lançados</h2>
                   <p>Pedidos registrados no sistema para verificação da equipe.</p>
+                </div>
+                <div class="orders-filters">
+                  <label>Busca rápida
+                    <input id="orders-search-input" type="search" placeholder="Pedido, solicitante ou volume" />
+                  </label>
+                  <label>Status
+                    <select id="orders-status-filter">
+                      <option value="all">Todos</option>
+                      <option value="open">Abertos</option>
+                      <option value="completed">Concluídos</option>
+                    </select>
+                  </label>
+                  <label>Solicitante
+                    <input id="orders-requester-filter" type="text" placeholder="Nome do usuário" />
+                  </label>
+                  <label>Data inicial
+                    <input id="orders-start-filter" type="date" />
+                  </label>
+                  <label>Data final
+                    <input id="orders-end-filter" type="date" />
+                  </label>
+                  <div class="orders-filter-actions">
+                    <button id="orders-clear-filters-btn" type="button" class="row-action">Limpar filtros</button>
+                    <span id="orders-filter-count" class="orders-filter-count">0 pedidos</span>
+                  </div>
                 </div>
                 <div class="table-wrap table-wrap-large">
                   <table>
@@ -283,12 +308,12 @@
                       <tr>
                         <th>Pedido</th>
                         <th>Solicitante</th>
-                        <th>Periodo</th>
+                        <th>Período</th>
                         <th>Criado em</th>
                         <th>Total latas</th>
                         <th>Volume</th>
                         <th>Status</th>
-                        <th>Acoes</th>
+                        <th>Ações</th>
                       </tr>
                     </thead>
                     <tbody id="orders-body"></tbody>

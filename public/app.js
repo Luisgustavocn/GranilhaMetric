@@ -23,6 +23,13 @@ const state = {
   lastCalculation: null,
   agendaStartDate: null,
   agendaEndDate: null,
+  orderFilters: {
+    search: '',
+    status: 'all',
+    requester: '',
+    startDate: '',
+    endDate: ''
+  },
   currentView: 'inicio-section',
   modal: null,
   confirmModal: null
@@ -100,6 +107,13 @@ const agendaRangeLabel = document.getElementById('agenda-range-label');
 const agendaCalendarTable = document.getElementById('agenda-calendar-table');
 const agendaReservationsList = document.getElementById('agenda-reservations-list');
 const agendaTrucksList = document.getElementById('agenda-trucks-list');
+const ordersSearchInput = document.getElementById('orders-search-input');
+const ordersStatusFilter = document.getElementById('orders-status-filter');
+const ordersRequesterFilter = document.getElementById('orders-requester-filter');
+const ordersStartFilter = document.getElementById('orders-start-filter');
+const ordersEndFilter = document.getElementById('orders-end-filter');
+const ordersClearFiltersBtn = document.getElementById('orders-clear-filters-btn');
+const ordersFilterCount = document.getElementById('orders-filter-count');
 
 init();
 
@@ -128,6 +142,12 @@ function bindEvents() {
   agendaRefreshBtn?.addEventListener('click', () => {
     loadTruckSchedule(true);
   });
+  ordersSearchInput?.addEventListener('input', onOrderFiltersChange);
+  ordersStatusFilter?.addEventListener('change', onOrderFiltersChange);
+  ordersRequesterFilter?.addEventListener('input', onOrderFiltersChange);
+  ordersStartFilter?.addEventListener('change', onOrderFiltersChange);
+  ordersEndFilter?.addEventListener('change', onOrderFiltersChange);
+  ordersClearFiltersBtn?.addEventListener('click', clearOrderFilters);
   manualDistributionTypeSelect.addEventListener('change', onManualDistributionTypeChange);
   manualTruckSelect.addEventListener('change', () => {
     const selected = Number(manualTruckSelect.value);
@@ -178,6 +198,7 @@ function bindEvents() {
   syncLegacyOrderDateInput();
   syncCalculationPanels();
   syncCanShapeFields();
+  syncOrderFilterInputs();
 }
 
 async function tryLoadSession() {
@@ -611,23 +632,30 @@ function renderUsers() {
 
 function renderOrders() {
   ordersBody.innerHTML = '';
+  const filteredOrders = getFilteredOrders();
 
-  const hasSelection = state.orders.some((order) => order.id === state.selectedOrderId);
+  const hasSelection = filteredOrders.some((order) => order.id === state.selectedOrderId);
   if (!hasSelection) {
-    state.selectedOrderId = state.orders[0]?.id ?? null;
+    state.selectedOrderId = filteredOrders[0]?.id ?? null;
   }
   if (!state.selectedOrderId && state.modal?.type === 'order') {
     closeEntityModal();
   }
 
-  if (!state.orders.length) {
+  if (ordersFilterCount) {
+    const total = state.orders.length;
+    const visible = filteredOrders.length;
+    ordersFilterCount.textContent = visible === total ? `${visible} pedido(s)` : `${visible} de ${total} pedido(s)`;
+  }
+
+  if (!filteredOrders.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="8">Nenhum pedido lancado.</td>';
+    tr.innerHTML = '<td colspan="8">Nenhum pedido encontrado com os filtros atuais.</td>';
     ordersBody.appendChild(tr);
     return;
   }
 
-  for (const order of state.orders) {
+  for (const order of filteredOrders) {
     const tr = document.createElement('tr');
     tr.classList.add('selectable-row');
     if (order.id === state.selectedOrderId) {
@@ -663,6 +691,77 @@ function renderOrders() {
 
     ordersBody.appendChild(tr);
   }
+}
+
+function onOrderFiltersChange() {
+  state.orderFilters.search = String(ordersSearchInput?.value || '').trim();
+  state.orderFilters.status = String(ordersStatusFilter?.value || 'all').trim() || 'all';
+  state.orderFilters.requester = String(ordersRequesterFilter?.value || '').trim();
+  state.orderFilters.startDate = String(ordersStartFilter?.value || '').trim();
+  state.orderFilters.endDate = String(ordersEndFilter?.value || '').trim();
+  renderOrders();
+}
+
+function clearOrderFilters() {
+  state.orderFilters = {
+    search: '',
+    status: 'all',
+    requester: '',
+    startDate: '',
+    endDate: ''
+  };
+  syncOrderFilterInputs();
+  renderOrders();
+}
+
+function syncOrderFilterInputs() {
+  if (ordersSearchInput) ordersSearchInput.value = state.orderFilters.search;
+  if (ordersStatusFilter) ordersStatusFilter.value = state.orderFilters.status;
+  if (ordersRequesterFilter) ordersRequesterFilter.value = state.orderFilters.requester;
+  if (ordersStartFilter) ordersStartFilter.value = state.orderFilters.startDate;
+  if (ordersEndFilter) ordersEndFilter.value = state.orderFilters.endDate;
+}
+
+function getFilteredOrders() {
+  const { search, status, requester, startDate, endDate } = state.orderFilters;
+  const normalizedSearch = normalizeText(search);
+  const normalizedRequester = normalizeText(requester);
+
+  return state.orders.filter((order) => {
+    if (status !== 'all' && order.status !== status) {
+      return false;
+    }
+
+    if (normalizedRequester && !normalizeText(order.created_by_name).includes(normalizedRequester)) {
+      return false;
+    }
+
+    const orderStartDate = getOrderStartDate(order) || '';
+    const orderEndDate = getOrderEndDate(order) || '';
+    if (startDate && orderEndDate && orderEndDate < startDate) {
+      return false;
+    }
+    if (endDate && orderStartDate && orderStartDate > endDate) {
+      return false;
+    }
+
+    if (!normalizedSearch) {
+      return true;
+    }
+
+    const haystack = normalizeText(
+      [
+        `#${order.id}`,
+        order.created_by_name,
+        formatOrderRange(order),
+        formatDateTime(order.created_at),
+        formatVolume(order.total_volume_cm3),
+        order.status === 'completed' ? 'concluido' : 'aberto'
+      ].join(' ')
+    );
+
+    return haystack.includes(normalizedSearch);
+  });
 }
 
 function renderTruckSchedule() {
@@ -2424,6 +2523,14 @@ function formatDateTime(value) {
 function formatVolume(volumeCm3) {
   const liters = volumeCm3 / 1000;
   return `${liters.toFixed(2)} L`;
+}
+
+function normalizeText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
 }
 
 async function api(url, options = {}) {
