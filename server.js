@@ -5,9 +5,14 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const MAX_REQUEST_BODY_SIZE = 1_000_000;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 100;
+
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DB_PATH = path.join(__dirname, 'database.sqlite');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'database.sqlite');
 
 const db = new DatabaseSync(DB_PATH);
 const sessions = new Map();
@@ -15,7 +20,42 @@ const sessions = new Map();
 initDb();
 
 const server = http.createServer(async (req, res) => {
+  const startTime = Date.now();
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // Security headers
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  if (NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+
+  // CORS headers
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  // Rate limiting check
+  const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
+                   req.socket.remoteAddress;
+  if (!checkRateLimit(clientIp)) {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Muitas requisições. Tente novamente em breve.' }));
+    return;
+  }
 
   try {
     if (url.pathname.startsWith('/api/')) {
@@ -25,14 +65,275 @@ const server = http.createServer(async (req, res) => {
 
     serveStaticFile(res, url.pathname);
   } catch (error) {
-    console.error(error);
+    console.error(`[ERROR] ${req.method} ${req.url}:`, error);
     sendJson(res, 500, { error: 'Erro interno no servidor.' });
+  } finally {
+    const duration = Date.now() - startTime;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - ${res.statusCode || 200} - ${duration}ms`);
   }
 });
 
 server.listen(PORT, () => {
   console.log(`Servidor iniciado em http://localhost:${PORT}`);
+  console.log(`Ambiente: ${NODE_ENV}`);
+  console.log(`Database: ${DB_PATH}`);
 });
+
+// Graceful shutdown
+let isShuttingDown = false;
+const activeConnections = new Set();
+
+server.on('connection', (socket) => {
+  activeConnections.add(socket);
+  socket.on('close', () => {
+    activeConnections.delete(socket);
+  });
+});
+
+function gracefulShutdown(signal) {
+  console.log(`\n${signal} recebido. Iniciando desligamento gracioso...`);
+  isShuttingDown = true;
+
+  server.close(() => {
+    console.log('Servidor HTTP fechado.');
+    db.close();
+    console.log('Database fechada.');
+    console.log('Desligamento completo.');
+    process.exit(0);
+  });
+
+  // Force close after 30 seconds
+  setTimeout(() => {
+    console.error('Timeout de desligamento atingido. Forçando encerramento.');
+    process.exit(1);
+  }, 30000);
+
+  // Destroy active connections
+  for (const socket of activeConnections) {
+    socket.destroy();
+  }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Rate limiter
+const rateLimitMap = new Map();
+
+function checkRateLimit(clientIp) {
+  // Check if IP is blocked first
+  if (isIpBlocked(clientIp)) {
+    return false;
+  }
+
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+
+  if (!rateLimitMap.has(clientIp)) {
+    rateLimitMap.set(clientIp, []);
+  }
+
+  const requests = rateLimitMap.get(clientIp);
+  // Remove old requests
+  while (requests.length > 0 && requests[0] < windowStart) {
+    requests.shift();
+  }
+
+  if (requests.length >= RATE_LIMIT_MAX_REQUESTS) {
+    recordSuspiciousActivity(clientIp, 'RATE_LIMIT_EXCEEDED', { count: requests.length });
+    return false;
+  }
+
+  requests.push(now);
+  return true;
+}
+
+// Cleanup rate limit map every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+  for (const [ip, requests] of rateLimitMap.entries()) {
+    if (requests.length === 0 || requests[requests.length - 1] < windowStart) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 600000);
+
+// Security Monitoring System
+const securityMetrics = {
+  failedLogins: new Map(),      // IP -> { count, firstAttempt, lastAttempt }
+  suspiciousActivity: new Map(), // IP -> [{ type, timestamp, details }]
+  blockedIps: new Set(),
+  auditLog: [],               // Recent security events
+  maxAuditLogSize: 1000
+};
+
+const SECURITY_CONFIG = {
+  maxFailedLogins: 5,         // Block after 5 failed attempts
+  failedLoginWindow: 15 * 60 * 1000,  // 15 minutes
+  blockDuration: 60 * 60 * 1000,        // 1 hour block
+  suspiciousThreshold: 10               // Suspicious actions before alert
+};
+
+function recordSecurityEvent(type, ip, details = {}) {
+  const event = {
+    timestamp: new Date().toISOString(),
+    type,
+    ip: sanitizeIp(ip),
+    details: sanitizeLogData(details)
+  };
+
+  securityMetrics.auditLog.unshift(event);
+  if (securityMetrics.auditLog.length > securityMetrics.maxAuditLogSize) {
+    securityMetrics.auditLog.pop();
+  }
+
+  // Log to console in production
+  if (NODE_ENV === 'production') {
+    console.log(`[SECURITY] ${type} from ${sanitizeIp(ip)}:`, JSON.stringify(details));
+  }
+}
+
+function recordFailedLogin(ip, email) {
+  const now = Date.now();
+  const record = securityMetrics.failedLogins.get(ip) || { count: 0, firstAttempt: now, lastAttempt: 0 };
+
+  // Reset if window expired
+  if (now - record.firstAttempt > SECURITY_CONFIG.failedLoginWindow) {
+    record.count = 0;
+    record.firstAttempt = now;
+  }
+
+  record.count++;
+  record.lastAttempt = now;
+  securityMetrics.failedLogins.set(ip, record);
+
+  recordSecurityEvent('FAILED_LOGIN', ip, { email: sanitizeEmail(email), attempt: record.count });
+
+  // Block IP if threshold reached
+  if (record.count >= SECURITY_CONFIG.maxFailedLogins) {
+    securityMetrics.blockedIps.add(ip);
+    recordSecurityEvent('IP_BLOCKED', ip, { reason: 'too_many_failed_logins', count: record.count });
+
+    // Auto-unblock after duration
+    setTimeout(() => {
+      securityMetrics.blockedIps.delete(ip);
+      securityMetrics.failedLogins.delete(ip);
+      recordSecurityEvent('IP_UNBLOCKED', ip, { reason: 'block_expired' });
+    }, SECURITY_CONFIG.blockDuration);
+  }
+}
+
+function recordSuccessfulLogin(ip, userId) {
+  // Clear failed attempts on successful login
+  securityMetrics.failedLogins.delete(ip);
+  recordSecurityEvent('SUCCESSFUL_LOGIN', ip, { userId });
+}
+
+function isIpBlocked(ip) {
+  return securityMetrics.blockedIps.has(ip);
+}
+
+function recordSuspiciousActivity(ip, type, details = {}) {
+  const activities = securityMetrics.suspiciousActivity.get(ip) || [];
+  activities.push({ type, timestamp: Date.now(), details });
+
+  // Keep only last 100 activities per IP
+  if (activities.length > 100) {
+    activities.shift();
+  }
+
+  securityMetrics.suspiciousActivity.set(ip, activities);
+
+  // Alert if threshold reached
+  if (activities.length >= SECURITY_CONFIG.suspiciousThreshold) {
+    recordSecurityEvent('SUSPICIOUS_ACTIVITY_ALERT', ip, {
+      activityCount: activities.length,
+      recentTypes: activities.slice(-5).map(a => a.type)
+    });
+  }
+}
+
+// Input sanitization helpers
+function sanitizeIp(ip) {
+  if (!ip) return 'unknown';
+  // IPv4: keep as is, IPv6: truncate for privacy
+  if (ip.includes(':')) return ip.split(':').slice(0, 4).join(':') + '...';
+  return ip;
+}
+
+function sanitizeEmail(email) {
+  if (!email) return 'unknown';
+  // Show only first 2 chars of local part
+  const [local, domain] = email.split('@');
+  if (!domain) return email.substring(0, 2) + '...';
+  return local.substring(0, 2) + '***@' + domain;
+}
+
+function sanitizeLogData(data) {
+  // Remove sensitive fields from logged data
+  const sensitiveFields = ['password', 'password_hash', 'token', 'sid', 'session'];
+  const sanitized = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (sensitiveFields.includes(key.toLowerCase())) {
+      sanitized[key] = '***REDACTED***';
+    } else if (typeof value === 'object' && value !== null) {
+      sanitized[key] = sanitizeLogData(value);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+
+function sanitizeString(str, maxLength = 255) {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .replace(/[<>]/g, '')  // Remove < and > to prevent HTML injection
+    .substring(0, maxLength)
+    .trim();
+}
+
+// Automatic cleanup jobs
+function runSecurityCleanup() {
+  const now = Date.now();
+
+  // Cleanup old failed login records
+  for (const [ip, record] of securityMetrics.failedLogins.entries()) {
+    if (now - record.lastAttempt > SECURITY_CONFIG.failedLoginWindow) {
+      securityMetrics.failedLogins.delete(ip);
+    }
+  }
+
+  // Cleanup old suspicious activities
+  const oneHourAgo = now - (60 * 60 * 1000);
+  for (const [ip, activities] of securityMetrics.suspiciousActivity.entries()) {
+    const recent = activities.filter(a => a.timestamp > oneHourAgo);
+    if (recent.length === 0) {
+      securityMetrics.suspiciousActivity.delete(ip);
+    } else {
+      securityMetrics.suspiciousActivity.set(ip, recent);
+    }
+  }
+
+  // Cleanup expired sessions from memory
+  for (const [token, session] of sessions.entries()) {
+    if (session.expiresAt < now) {
+      sessions.delete(token);
+    }
+  }
+
+  recordSecurityEvent('CLEANUP_COMPLETED', 'system', {
+    activeSessions: sessions.size,
+    trackedIps: securityMetrics.failedLogins.size
+  });
+}
+
+// Run cleanup every 10 minutes
+setInterval(runSecurityCleanup, 600000);
+
+// Initial cleanup on startup
+runSecurityCleanup();
 
 function initDb() {
   db.exec('PRAGMA journal_mode = WAL;');
@@ -214,7 +515,8 @@ async function handleApi(req, res, url) {
 
   if (method === 'POST' && url.pathname === '/api/login') {
     const body = await readJson(req);
-    return login(res, body);
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+    return login(res, body, clientIp);
   }
 
   if (method === 'POST' && url.pathname === '/api/logout') {
@@ -375,12 +677,55 @@ async function handleApi(req, res, url) {
     return calculateLoad(res, body);
   }
 
+  // Security health check endpoint (public)
+  if (method === 'GET' && url.pathname === '/api/health') {
+    return sendJson(res, 200, {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      version: process.version,
+      environment: NODE_ENV,
+      database: {
+        path: DB_PATH,
+        connected: true
+      }
+    });
+  }
+
+  // Admin security monitoring endpoints
+  if (method === 'GET' && url.pathname === '/api/admin/security/status') {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    return getSecurityStatus(res);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/admin/security/audit-log') {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 50, 100);
+    return getSecurityAuditLog(res, limit);
+  }
+
+  if (method === 'POST' && url.pathname === '/api/admin/security/unblock-ip') {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    return unblockIp(res, body);
+  }
+
   sendJson(res, 404, { error: 'Rota não encontrada.' });
 }
 
-function login(res, body) {
+function login(res, body, clientIp) {
   const email = String(body?.email || '').trim().toLowerCase();
   const password = String(body?.password || '');
+
+  // Check if IP is blocked
+  if (isIpBlocked(clientIp)) {
+    recordSecurityEvent('BLOCKED_LOGIN_ATTEMPT', clientIp, { email: sanitizeEmail(email) });
+    return sendJson(res, 403, { error: 'Acesso temporariamente bloqueado devido a múltiplas tentativas falhas.' });
+  }
 
   if (!email || !password) {
     return sendJson(res, 400, { error: 'Informe email e senha.' });
@@ -388,6 +733,7 @@ function login(res, body) {
 
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
   if (!user || !verifyPassword(password, user.password_hash)) {
+    recordFailedLogin(clientIp, email);
     return sendJson(res, 401, { error: 'Credenciais invalidas.' });
   }
 
@@ -401,7 +747,62 @@ function login(res, body) {
     path: '/'
   });
 
+  recordSuccessfulLogin(clientIp, user.id);
   sendJson(res, 200, { user: safeUser(user) });
+}
+
+function getSecurityStatus(res) {
+  const blockedIps = [...securityMetrics.blockedIps];
+  const failedLogins = [...securityMetrics.failedLogins.entries()].map(([ip, data]) => ({
+    ip: sanitizeIp(ip),
+    attempts: data.count,
+    lastAttempt: new Date(data.lastAttempt).toISOString()
+  }));
+  const suspiciousActivity = [...securityMetrics.suspiciousActivity.entries()].map(([ip, activities]) => ({
+    ip: sanitizeIp(ip),
+    count: activities.length,
+    recentTypes: activities.slice(-3).map(a => a.type)
+  }));
+
+  sendJson(res, 200, {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    blockedIps: blockedIps.map(sanitizeIp),
+    failedLogins,
+    suspiciousActivity,
+    activeSessions: sessions.size,
+    auditLogSize: securityMetrics.auditLog.length
+  });
+}
+
+function getSecurityAuditLog(res, limit) {
+  const logs = securityMetrics.auditLog.slice(0, limit);
+  sendJson(res, 200, {
+    logs,
+    total: securityMetrics.auditLog.length,
+    returned: logs.length
+  });
+}
+
+function unblockIp(res, body) {
+  const ip = body?.ip;
+  if (!ip) {
+    return sendJson(res, 400, { error: 'IP é obrigatório.' });
+  }
+
+  const wasBlocked = securityMetrics.blockedIps.has(ip);
+  securityMetrics.blockedIps.delete(ip);
+  securityMetrics.failedLogins.delete(ip);
+
+  if (wasBlocked) {
+    recordSecurityEvent('IP_MANUALLY_UNBLOCKED', ip, { adminAction: true });
+  }
+
+  sendJson(res, 200, {
+    ok: true,
+    wasBlocked,
+    message: wasBlocked ? 'IP desbloqueado com sucesso.' : 'IP não estava bloqueado.'
+  });
 }
 
 function logout(req, res) {

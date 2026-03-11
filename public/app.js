@@ -1083,10 +1083,18 @@ function renderCargoBuilder() {
   });
 
   cargoBody.querySelectorAll('.remove-btn').forEach((button) => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', async () => {
       state.cargoItems.splice(Number(button.dataset.index), 1);
       state.lastCalculation = null;
       renderCargoBuilder();
+
+      // Auto-calculate in automatic mode if dates are selected and items remain
+      if (state.calculationMode === 'automatic' && state.cargoItems.length > 0) {
+        const orderRange = getSelectedOrderRange(false);
+        if (orderRange) {
+          await onCalculateAutomatic();
+        }
+      }
     });
   });
 }
@@ -1836,6 +1844,14 @@ function onAddCargoItem(event) {
   resultBox.classList.add('hidden');
   manualResultBox.classList.add('hidden');
   renderCargoBuilder();
+
+  // Auto-calculate in automatic mode if dates are selected
+  if (state.calculationMode === 'automatic') {
+    const orderRange = getSelectedOrderRange(false);
+    if (orderRange && state.cargoItems.length > 0) {
+      onCalculateAutomatic();
+    }
+  }
 }
 
 async function onCalculateAutomatic() {
