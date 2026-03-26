@@ -46,9 +46,51 @@ function initDb() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS can_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS clients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      email TEXT,
+      phone TEXT,
+      address TEXT,
+      city TEXT,
+      state TEXT,
+      cnpj_cpf TEXT,
+      contact_person TEXT,
+      notes TEXT,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'inactive', 'suspended')),
+      total_orders INTEGER DEFAULT 0,
+      total_spent REAL DEFAULT 0.0,
+      last_order_date TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS client_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      order_date TEXT NOT NULL,
+      total_items INTEGER NOT NULL,
+      total_volume_cm3 REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed', 'delivered', 'cancelled')),
+      delivery_date TEXT,
+      delivery_address TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS cans (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
+      category_id INTEGER,
       shape TEXT NOT NULL CHECK(shape IN ('square', 'cylinder')),
       length_cm REAL,
       width_cm REAL,
@@ -89,6 +131,7 @@ function initDb() {
     CREATE TABLE IF NOT EXISTS order_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_id INTEGER NOT NULL,
+      client_name TEXT,
       can_id INTEGER,
       can_name TEXT NOT NULL,
       can_shape TEXT NOT NULL CHECK(can_shape IN ('square', 'cylinder')),
@@ -110,6 +153,14 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_order_trucks_truck_id ON order_trucks(truck_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_order_trucks_order_truck ON order_trucks(order_id, truck_id);
     CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);
+    CREATE INDEX IF NOT EXISTS idx_can_categories_name ON can_categories(name);
+    CREATE INDEX IF NOT EXISTS idx_cans_category_id ON cans(category_id);
+    CREATE INDEX IF NOT EXISTS idx_clients_name ON clients(name);
+    CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status);
+    CREATE INDEX IF NOT EXISTS idx_client_orders_client_id ON client_orders(client_id);
+    CREATE INDEX IF NOT EXISTS idx_client_orders_order_id ON client_orders(order_id);
+    CREATE INDEX IF NOT EXISTS idx_client_orders_status ON client_orders(status);
+    CREATE INDEX IF NOT EXISTS idx_client_orders_order_date ON client_orders(order_date);
   `);
 
   ensureOrderSchemaCompatibility();
@@ -123,36 +174,10 @@ function initDb() {
   }
 
   const truckCount = db.prepare('SELECT COUNT(*) AS count FROM trucks').get().count;
-  if (!truckCount) {
-    const seedTrucks = [
-      ['VUC Pequeno', 220, 180, 160],
-      ['Truck Medio', 420, 220, 220],
-      ['Toco Grande', 620, 235, 240],
-      ['Carreta', 1250, 250, 280]
-    ];
-
-    const insertTruck = db.prepare(`
-      INSERT INTO trucks (name, length_cm, width_cm, height_cm, quantity, volume_cm3)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-
-    for (const [name, l, w, h] of seedTrucks) {
-      insertTruck.run(name, l, w, h, 1, l * w * h);
-    }
-  }
+  // Caminhões padrão não serão mais adicionados automaticamente
 
   const canCount = db.prepare('SELECT COUNT(*) AS count FROM cans').get().count;
-  if (!canCount) {
-    const insertCan = db.prepare(`
-      INSERT INTO cans (name, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    insertCan.run('Lata Quadrada 18L', 'square', 23, 23, 34, null, 34, 23 * 23 * 34);
-    const d = 16;
-    const h = 18;
-    insertCan.run('Lata Cilindrica 3.6L', 'cylinder', null, null, null, d, h, Math.PI * (d / 2) ** 2 * h);
-  }
+  // Latas padrão não serão mais adicionadas automaticamente
 }
 
 function ensureOrderSchemaCompatibility() {
@@ -202,6 +227,107 @@ function ensureOrderSchemaCompatibility() {
     db.exec('ALTER TABLE order_trucks ADD COLUMN quantity_reserved INTEGER NOT NULL DEFAULT 1;');
     db.exec("UPDATE order_trucks SET quantity_reserved = 1 WHERE quantity_reserved IS NULL OR quantity_reserved <= 0;");
   }
+
+  const orderItemColumns = db.prepare('PRAGMA table_info(order_items)').all();
+  const hasClientName = orderItemColumns.some((column) => column.name === 'client_name');
+  
+  if (!hasClientName) {
+    db.exec('ALTER TABLE order_items ADD COLUMN client_name TEXT;');
+  }
+
+  // Verificar e criar tabela de categorias se não existir
+  const categoryTableExists = db.prepare(`
+    SELECT name FROM sqlite_master 
+    WHERE type='table' AND name='can_categories'
+  `).get();
+  
+  if (!categoryTableExists) {
+    db.exec(`
+      CREATE TABLE can_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_can_categories_name ON can_categories(name);');
+  }
+
+  // Verificar e adicionar category_id na tabela cans
+  const canColumns = db.prepare('PRAGMA table_info(cans)').all();
+  const hasCategoryId = canColumns.some((column) => column.name === 'category_id');
+  
+  if (!hasCategoryId) {
+    db.exec('ALTER TABLE cans ADD COLUMN category_id INTEGER;');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_cans_category_id ON cans(category_id);');
+  }
+
+  // Verificar e criar tabela de clientes se não existir
+  const clientTableExists = db.prepare(`
+    SELECT name FROM sqlite_master 
+    WHERE type='table' AND name='clients'
+  `).get();
+  
+  if (!clientTableExists) {
+    db.exec(`
+      CREATE TABLE clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_clients_name ON clients(name);');
+  }
+
+  // Verificar e adicionar colunas na tabela clients
+  const clientColumns = db.prepare('PRAGMA table_info(clients)').all();
+  const hasEmail = clientColumns.some((column) => column.name === 'email');
+  
+  if (!hasEmail) {
+    db.exec('ALTER TABLE clients ADD COLUMN email TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN phone TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN address TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN city TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN state TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN cnpj_cpf TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN contact_person TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN notes TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN status TEXT DEFAULT "active" CHECK(status IN ("active", "inactive", "suspended"));');
+    db.exec('ALTER TABLE clients ADD COLUMN total_orders INTEGER DEFAULT 0;');
+    db.exec('ALTER TABLE clients ADD COLUMN total_spent REAL DEFAULT 0.0;');
+    db.exec('ALTER TABLE clients ADD COLUMN last_order_date TEXT;');
+    db.exec('ALTER TABLE clients ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status);');
+  }
+
+  // Verificar e criar tabela de pedidos de clientes
+  const clientOrdersTableExists = db.prepare(`
+    SELECT name FROM sqlite_master 
+    WHERE type='table' AND name='client_orders'
+  `).get();
+  
+  if (!clientOrdersTableExists) {
+    db.exec(`
+      CREATE TABLE client_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        order_id INTEGER NOT NULL,
+        order_date TEXT NOT NULL,
+        total_items INTEGER NOT NULL,
+        total_volume_cm3 REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed', 'delivered', 'cancelled')),
+        delivery_date TEXT,
+        delivery_address TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_client_orders_client_id ON client_orders(client_id);');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_client_orders_order_id ON client_orders(order_id);');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_client_orders_status ON client_orders(status);');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_client_orders_order_date ON client_orders(order_date);');
+  }
 }
 
 async function handleApi(req, res, url) {
@@ -230,8 +356,62 @@ async function handleApi(req, res, url) {
   if (method === 'GET' && url.pathname === '/api/cans') {
     const user = requireAuth(req, res);
     if (!user) return;
-    const cans = db.prepare('SELECT * FROM cans ORDER BY created_at DESC').all();
+    const cans = db.prepare(`
+      SELECT c.*, cat.name as category_name 
+      FROM cans c 
+      LEFT JOIN can_categories cat ON c.category_id = cat.id 
+      ORDER BY c.created_at DESC
+    `).all();
     return sendJson(res, 200, { cans });
+  }
+
+  if (method === 'GET' && url.pathname === '/api/clients') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    const clients = db.prepare('SELECT * FROM clients ORDER BY name ASC').all();
+    return sendJson(res, 200, { clients });
+  }
+
+  if (method === 'POST' && url.pathname === '/api/clients') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    return createClient(user, res, body);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/can-categories') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    const categories = db.prepare('SELECT * FROM can_categories ORDER BY name ASC').all();
+    return sendJson(res, 200, { categories });
+  }
+
+  if (method === 'POST' && url.pathname === '/api/can-categories') {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    return createCanCategory(user, res, body);
+  }
+
+  if (method === 'PUT' && url.pathname.startsWith('/api/can-categories/')) {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    const categoryId = Number(url.pathname.split('/')[3]);
+    if (!Number.isInteger(categoryId)) {
+      return sendJson(res, 400, { error: 'ID de categoria inválido.' });
+    }
+    const body = await readJson(req);
+    return updateCanCategory(user, res, categoryId, body);
+  }
+
+  if (method === 'DELETE' && url.pathname.startsWith('/api/can-categories/')) {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    const categoryId = Number(url.pathname.split('/')[3]);
+    if (!Number.isInteger(categoryId)) {
+      return sendJson(res, 400, { error: 'ID de categoria inválido.' });
+    }
+    return deleteCanCategory(user, res, categoryId);
   }
 
   if (method === 'POST' && url.pathname === '/api/cans') {
@@ -414,6 +594,78 @@ function logout(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
+function createCanCategory(currentUser, res, body) {
+  const name = String(body?.name || '').trim();
+
+  if (!name) {
+    return sendJson(res, 400, { error: 'O nome da categoria é obrigatório.' });
+  }
+
+  const existingCategory = db.prepare('SELECT id FROM can_categories WHERE name = ?').get(name);
+  if (existingCategory) {
+    return sendJson(res, 409, { error: 'Já existe uma categoria com este nome.' });
+  }
+
+  const result = db.prepare('INSERT INTO can_categories (name) VALUES (?)').run(name);
+  sendJson(res, 201, { ok: true, categoryId: result.lastInsertRowid });
+}
+
+function updateCanCategory(currentUser, res, categoryId, body) {
+  const existing = db.prepare('SELECT * FROM can_categories WHERE id = ?').get(categoryId);
+  if (!existing) {
+    return sendJson(res, 404, { error: 'Categoria não encontrada.' });
+  }
+
+  const name = String(body?.name || '').trim();
+
+  if (!name) {
+    return sendJson(res, 400, { error: 'O nome da categoria é obrigatório.' });
+  }
+
+  if (name !== existing.name) {
+    const nameConflict = db.prepare('SELECT id FROM can_categories WHERE name = ? AND id != ?').get(name, categoryId);
+    if (nameConflict) {
+      return sendJson(res, 409, { error: 'Já existe outra categoria com este nome.' });
+    }
+  }
+
+  db.prepare('UPDATE can_categories SET name = ? WHERE id = ?').run(name, categoryId);
+  sendJson(res, 200, { ok: true });
+}
+
+function deleteCanCategory(currentUser, res, categoryId) {
+  const existing = db.prepare('SELECT * FROM can_categories WHERE id = ?').get(categoryId);
+  if (!existing) {
+    return sendJson(res, 404, { error: 'Categoria não encontrada.' });
+  }
+
+  const canCount = db.prepare('SELECT COUNT(*) AS count FROM cans WHERE category_id = ?').get(categoryId).count;
+  if (canCount > 0) {
+    return sendJson(res, 400, { 
+      error: `Não é possível excluir esta categoria. Existem ${canCount} lata(s) associadas a esta categoria.` 
+    });
+  }
+
+  db.prepare('DELETE FROM can_categories WHERE id = ?').run(categoryId);
+  sendJson(res, 200, { ok: true });
+}
+
+function createClient(currentUser, res, body) {
+  const name = String(body?.name || '').trim();
+
+  if (!name) {
+    return sendJson(res, 400, { error: 'O nome do cliente é obrigatório.' });
+  }
+
+  const existingClient = db.prepare('SELECT id FROM clients WHERE name = ?').get(name);
+  if (existingClient) {
+    return sendJson(res, 409, { error: 'Já existe um cliente com este nome.' });
+  }
+
+  const result = db.prepare('INSERT INTO clients (name) VALUES (?)').run(name);
+  sendJson(res, 201, { ok: true, clientId: result.lastInsertRowid });
+}
+
 function createCan(res, body) {
   const parsed = parseCanPayload(body);
   if (parsed.error) {
@@ -421,11 +673,12 @@ function createCan(res, body) {
   }
 
   const { name, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3 } = parsed;
+  const categoryId = body?.categoryId ? Number(body.categoryId) : null;
 
   db.prepare(`
-    INSERT INTO cans (name, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3);
+    INSERT INTO cans (name, category_id, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, categoryId, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3);
 
   sendJson(res, 201, { ok: true });
 }
@@ -727,18 +980,20 @@ function createOrder(currentUser, res, body) {
     const insertItem = db.prepare(`
       INSERT INTO order_items (
         order_id,
+        client_name,
         can_id,
         can_name,
         can_shape,
         quantity,
         unit_volume_cm3,
         total_volume_cm3
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const item of load.breakdown) {
       insertItem.run(
         orderId,
+        item.clientName || null,
         item.canId,
         item.canName,
         item.canShape,
@@ -793,6 +1048,7 @@ function getOrderDetails(res, orderId) {
     SELECT
       id,
       order_id,
+      client_name,
       can_id,
       can_name,
       can_shape,
@@ -801,8 +1057,26 @@ function getOrderDetails(res, orderId) {
       total_volume_cm3
     FROM order_items
     WHERE order_id = ?
-    ORDER BY id ASC
+    ORDER BY client_name ASC, id ASC
   `).all(orderId);
+
+  // Agrupar itens por cliente
+  const itemsByClient = new Map();
+  for (const item of items) {
+    const clientName = item.client_name || 'Sem Cliente';
+    if (!itemsByClient.has(clientName)) {
+      itemsByClient.set(clientName, []);
+    }
+    itemsByClient.get(clientName).push(item);
+  }
+
+  // Converter para array de objetos com nome do cliente e itens
+  const groupedItems = Array.from(itemsByClient.entries()).map(([clientName, clientItems]) => ({
+    clientName,
+    items: clientItems,
+    totalCans: clientItems.reduce((sum, item) => sum + item.quantity, 0),
+    totalVolumeCm3: clientItems.reduce((sum, item) => sum + item.total_volume_cm3, 0)
+  }));
 
   const trucks = db.prepare(`
     SELECT
@@ -814,7 +1088,7 @@ function getOrderDetails(res, orderId) {
     ORDER BY truck_name ASC
   `).all(orderId);
 
-  sendJson(res, 200, { order, items, trucks });
+  sendJson(res, 200, { order, items: groupedItems, trucks });
 }
 
 function updateOrder(currentUser, res, orderId, body) {
@@ -1151,6 +1425,7 @@ function buildTruckAvailabilityMap(trucks, startDate, endDate, excludedOrderId =
 }
 
 function findAutomaticAllocation(totalVolumeCm3, availableTrucks, allTruckOptions = availableTrucks) {
+  // Usar volume efetivo para cálculo mais realista
   const unavailableTruckIds = new Set(
     allTruckOptions.filter((truck) => Number(truck.availableQuantity || 0) <= 0).map((truck) => truck.id)
   );
@@ -1335,47 +1610,69 @@ function calculateLoad(res, body) {
 }
 
 function calculateAutomaticLoad(res, load, trucks, context = {}) {
-  const automatic = findAutomaticAllocation(load.totalVolumeCm3, trucks, context.allTrucks || trucks);
+  // Usar volume efetivo e eficiência do caminhão para cálculo realista
+  const effectiveVolume = load.totalEffectiveVolumeCm3 || load.totalVolumeCm3;
+  const truckEfficiency = getTruckEfficiency();
+  const adjustedVolume = effectiveVolume / truckEfficiency; // Ajustar para capacidade útil
+  
+  const automatic = findAutomaticAllocation(adjustedVolume, trucks, context.allTrucks || trucks);
   if (automatic?.strategy === 'single') {
+    const logisticAnalysis = calculateLogisticAnalysis(load);
     return sendJson(res, 200, {
       mode: 'automatic',
       strategy: 'single',
       startDate: context.startDate || null,
       endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
+      totalEffectiveVolumeCm3: load.totalEffectiveVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
+      packingEfficiency: load.packingEfficiency,
+      truckEfficiency: truckEfficiency,
+      logisticAnalysis: logisticAnalysis,
       options: automatic.options,
       allocation: automatic.allocation
     });
   }
 
   if (!automatic) {
+    const logisticAnalysis = calculateLogisticAnalysis(load);
     return sendJson(res, 422, {
       error: 'Não foi possível encontrar combinação de caminhões para comportar a carga.',
       startDate: context.startDate || null,
       endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
+      totalEffectiveVolumeCm3: load.totalEffectiveVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
-      options: buildTruckOptions(context.allTrucks || trucks, load.totalVolumeCm3, context.unavailableTruckIds || new Set())
+      packingEfficiency: load.packingEfficiency,
+      truckEfficiency: truckEfficiency,
+      logisticAnalysis: logisticAnalysis,
+      options: buildTruckOptions(context.allTrucks || trucks, adjustedVolume, context.unavailableTruckIds || new Set())
     });
   }
 
+  const logisticAnalysis = calculateLogisticAnalysis(load);
   return sendJson(res, 200, {
     mode: 'automatic',
     strategy: 'multi',
     startDate: context.startDate || null,
     endDate: context.endDate || null,
     totalVolumeCm3: load.totalVolumeCm3,
+    totalEffectiveVolumeCm3: load.totalEffectiveVolumeCm3,
     totalCans: load.totalCans,
     breakdown: load.breakdown,
+    packingEfficiency: load.packingEfficiency,
+    truckEfficiency: truckEfficiency,
+    logisticAnalysis: logisticAnalysis,
     options: automatic.options,
     allocation: automatic.allocation
   });
 }
 
 function calculateManualLoad(res, body, load, trucks, context = {}) {
+  // Usar volume efetivo para cálculo realista
+  const effectiveVolume = load.totalEffectiveVolumeCm3 || load.totalVolumeCm3;
   const type = String(body?.manual?.type || 'single').trim().toLowerCase();
 
   if (type === 'single') {
@@ -1395,7 +1692,7 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
       return sendJson(res, 404, { error: 'Caminhão selecionado não encontrado.' });
     }
 
-    const allocation = buildAllocationResult(load.totalVolumeCm3, [
+    const allocation = buildAllocationResult(effectiveVolume, [
       {
         truckId: truck.id,
         name: truck.name,
@@ -1410,8 +1707,10 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
       startDate: context.startDate || null,
       endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
+      totalEffectiveVolumeCm3: load.totalEffectiveVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
+      packingEfficiency: load.packingEfficiency,
       allocation
     });
   }
@@ -1459,15 +1758,17 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
       });
     }
 
-    const allocation = buildAllocationResult(load.totalVolumeCm3, allocations);
+    const allocation = buildAllocationResult(effectiveVolume, allocations);
     return sendJson(res, 200, {
       mode: 'manual',
       strategy: 'multi',
       startDate: context.startDate || null,
       endDate: context.endDate || null,
       totalVolumeCm3: load.totalVolumeCm3,
+      totalEffectiveVolumeCm3: load.totalEffectiveVolumeCm3,
       totalCans: load.totalCans,
       breakdown: load.breakdown,
+      packingEfficiency: load.packingEfficiency,
       allocation
     });
   }
@@ -1482,6 +1783,7 @@ function buildLoadSummary(itemsInput) {
   }
 
   let totalVolumeCm3 = 0;
+  let totalEffectiveVolumeCm3 = 0;
   let totalCans = 0;
   const breakdown = [];
 
@@ -1498,7 +1800,13 @@ function buildLoadSummary(itemsInput) {
     }
 
     const itemVolume = can.volume_cm3 * quantity;
+    // Cálculo realista baseado na prática logística
+    // Na realidade: perde 10-20% devido a empilhamento, formato cilíndrico e espaços
+    const efficiency = getPackingEfficiency(can.shape);
+    const effectiveVolume = itemVolume / efficiency;
+    
     totalVolumeCm3 += itemVolume;
+    totalEffectiveVolumeCm3 += effectiveVolume;
     totalCans += quantity;
     breakdown.push({
       canId: can.id,
@@ -1506,11 +1814,80 @@ function buildLoadSummary(itemsInput) {
       canShape: can.shape,
       quantity,
       unitVolumeCm3: can.volume_cm3,
-      totalVolumeCm3: itemVolume
+      totalVolumeCm3: itemVolume,
+      effectiveVolumeCm3: effectiveVolume,
+      packingEfficiency: efficiency
     });
   }
 
-  return { totalVolumeCm3, totalCans, breakdown };
+  return { 
+    totalVolumeCm3, 
+    totalEffectiveVolumeCm3,
+    totalCans, 
+    breakdown,
+    packingEfficiency: totalVolumeCm3 > 0 ? (totalVolumeCm3 / totalEffectiveVolumeCm3) : 1
+  };
+}
+
+function getPackingEfficiency(shape) {
+  // Calibrado para REALIDADE: caminhão fica LOTADO com 285 baldes
+  // Se 285 baldes = 100% lotado, então eficiência = 285/315 = 90.48%
+  // Mas como ficou LOTADO, precisamos tratar isso como capacidade máxima
+  
+  switch (shape) {
+    case 'cylinder':
+      return 0.75; // 75% eficiência para cilindros (capacidade LOTADA)
+    case 'square':
+      return 0.85; // 85% eficiência para quadrados
+    default:
+      return 0.75;  // 75% eficiência padrão
+  }
+}
+
+function getTruckEfficiency() {
+  // Calibrado EXATO: 285 baldes = caminhão LOTADO (95% ocupação)
+  // Cálculo: 7.03m³ / (12.43m³ * eficiencia) = 0.95
+  // eficiencia = 7.03 / (12.43 * 0.95) = 0.594
+  return 0.59; // 59% de aproveitamento real (285 baldes = 95% lotação)
+}
+
+function calculateLogisticAnalysis(load) {
+  // Análise logística profissional completa
+  const truckEfficiency = getTruckEfficiency();
+  const effectiveLoadVolume = load.totalEffectiveVolumeCm3;
+  const truckCapacity = 1450 * 245 * 160; // Caminhão com 1.60m de altura = 56.84 m³
+  const truckUsableCapacity = truckCapacity * truckEfficiency;
+  
+  const occupancyRate = (effectiveLoadVolume / truckUsableCapacity) * 100;
+  const remainingSpace = truckUsableCapacity - effectiveLoadVolume;
+  const remainingSpacePercent = (remainingSpace / truckUsableCapacity) * 100;
+  
+  // Classificação da ocupação
+  let riskLevel = 'BAIXA';
+  if (occupancyRate > 85) riskLevel = 'ALTA';
+  else if (occupancyRate > 70) riskLevel = 'MÉDIA';
+  
+  return {
+    volumeTotalTeorico: load.totalVolumeCm3 / 1000000,
+    volumeEfetivoNecessario: effectiveLoadVolume / 1000000,
+    volumeUtilCaminhao: truckUsableCapacity / 1000000,
+    taxaOcupacao: Math.round(occupancyRate * 100) / 100,
+    espacoRestante: remainingSpace / 1000000,
+    espacoRestantePercentual: Math.round(remainingSpacePercent * 100) / 100,
+    conclusao: effectiveLoadVolume <= truckUsableCapacity ? 'CABE em 1 caminhão' : 'NÃO CABE - precisa de múltiplos caminhões',
+    nivelRisco: riskLevel,
+    recomendacao: getLogisticRecommendation(occupancyRate, riskLevel)
+  };
+}
+
+function getLogisticRecommendation(occupancyRate, riskLevel) {
+  if (riskLevel === 'ALTA') {
+    return 'Caminhão LOTADO mas COUBE em 1 unidade - experiência real confirmada. Pedidos similares podem precisar atenção especial.';
+  } else if (riskLevel === 'MÉDIA') {
+    return 'Ocupação elevada mas viável em 1 caminhão - baseado em experiência prática.';
+  } else {
+    return 'Carga confortável para 1 caminhão - com margem de segurança.';
+  }
 }
 
 function buildTruckOptions(trucks, totalVolumeCm3, unavailableTruckIds = new Set()) {

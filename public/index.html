@@ -84,6 +84,7 @@
                   <option value="calculadora-section">Lançar pedido</option>
                   <option value="pedidos-section">Pedidos</option>
                   <option value="agenda-section">Agenda</option>
+                  <option value="clientes-section">Clientes</option>
                   <option value="latas-section">Latas</option>
                   <option value="caminhoes-section">Caminhões</option>
                   <option id="mobile-nav-admin-option" value="admin-panel">Administração</option>
@@ -94,6 +95,7 @@
                 <li data-target="calculadora-section">Lançar pedido</li>
                 <li data-target="pedidos-section">Pedidos</li>
                 <li data-target="agenda-section">Agenda</li>
+                <li data-target="clientes-section">Clientes</li>
                 <li data-target="latas-section">Latas</li>
                 <li data-target="caminhoes-section">Caminhões</li>
                 <li id="nav-admin-item" data-target="admin-panel">Administração</li>
@@ -175,83 +177,132 @@
             <section id="calculadora-section" class="view-pane hidden">
               <article class="card card-calculator">
                 <h2>Lançar pedido</h2>
-                <p>Monte a carga e o sistema escolhe o caminhão ideal sem faltar espaço e com a menor sobra possível.</p>
+                <p>Selecione o cliente, adicione os itens e depois lance o pedido para o caminhão.</p>
 
-                <form id="cargo-item-form" class="inline-form">
-                  <label>Lata
-                    <select id="can-select" required></select>
-                  </label>
-                  <label>Quantidade
-                    <input id="quantity-input" type="number" min="1" value="1" required />
-                  </label>
-                  <button type="submit" class="btn btn-primary">Adicionar</button>
-                </form>
-
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Lata</th>
-                      <th>Qtd</th>
-                      <th>Volume unit.</th>
-                      <th>Subtotal</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody id="cargo-body"></tbody>
-                </table>
-
-                <div class="schedule-row">
-                  <label>Data inicial
-                    <input id="order-start-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
-                  </label>
-                  <label>Data final
-                    <input id="order-end-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
-                  </label>
-                  <input id="order-date-input" type="hidden" />
-                  <p id="date-availability-hint" class="hint">Selecione o período para verificar disponibilidade de caminhões.</p>
+                <div class="progress-indicator">
+                  <div class="progress-step active" id="step-client">
+                    <div class="step-number">1</div>
+                    <div class="step-label">Selecionar Cliente</div>
+                  </div>
+                  <div class="progress-step" id="step-items">
+                    <div class="step-number">2</div>
+                    <div class="step-label">Adicionar Itens</div>
+                  </div>
+                  <div class="progress-step" id="step-launch">
+                    <div class="step-number">3</div>
+                    <div class="step-label">Lançar Pedido</div>
+                  </div>
                 </div>
 
-                <div class="calc-mode-switch">
-                  <label><input type="radio" name="calculationMode" value="automatic" checked /> Automático</label>
-                  <label><input type="radio" name="calculationMode" value="manual" /> Manual</label>
-                </div>
-
-                <div id="automatic-calc-panel">
-                  <button id="calculate-btn" class="btn btn-dark">Calcular no modo automático</button>
-                  <div id="calculation-result" class="result-box hidden"></div>
-                </div>
-
-                <div id="manual-calc-panel" class="manual-area hidden">
-                  <h3>Seleção manual de caminhões</h3>
-                  <label>Distribuição da carga
-                    <select id="manual-distribution-type">
-                      <option value="single">Toda carga em 1 caminhão</option>
-                      <option value="multi">Distribuir em mais de 1 caminhão</option>
+                <div class="client-selection-section">
+                  <label>Selecione o Cliente
+                    <select id="selected-client">
+                      <option value="">Selecione um cliente...</option>
+                      <option value="_new">+ Criar novo cliente</option>
                     </select>
                   </label>
-
-                  <form id="manual-truck-form" class="manual-inline-form">
-                    <label>Caminhão
-                      <select id="manual-truck-select" required></select>
-                    </label>
-                    <button id="manual-calc-btn" type="submit" class="btn btn-primary">Simular manual</button>
-                  </form>
-
-                  <div id="manual-multi-panel" class="hidden">
-                    <div id="manual-allocation-list" class="allocation-list"></div>
-                    <div class="manual-multi-actions">
-                      <button id="add-manual-allocation-btn" type="button" class="row-action">Adicionar caminhão</button>
-                      <button id="manual-multi-calc-btn" type="button" class="btn btn-primary">Simular distribuição manual</button>
-                    </div>
-                  </div>
-
-                  <div id="manual-result" class="result-box hidden"></div>
+                  <label id="new-client-label" style="display:none;">
+                    Nome do Novo Cliente
+                    <input id="new-client-input" type="text" placeholder="Digite o nome do cliente..." />
+                    <button id="create-client-btn" class="btn btn-primary" type="button">Criar Cliente</button>
+                  </label>
                 </div>
 
-                <div class="order-launch-area">
-                  <h3>Lançar pedido</h3>
-                  <p>Depois de montar a carga, lance um pedido para registrar e acompanhar.</p>
-                  <button id="launch-order-btn" type="button" class="btn btn-primary">Lançar pedido com carga atual</button>
+                <div id="items-section" style="display:none;">
+                  <h3>Itens do Cliente: <span id="current-client-name"></span></h3>
+                  
+                  <div class="multi-client-actions" id="multi-client-actions" style="display:none;">
+                    <p style="margin-bottom: 16px; color: var(--muted);">
+                      📋 <strong>Dica:</strong> Você pode adicionar itens de vários clientes no mesmo caminhão. 
+                      Selecione outro cliente para adicionar mais itens.
+                    </p>
+                    <button id="add-more-clients-btn" class="btn btn-secondary" type="button">
+                      + Adicionar Cliente
+                    </button>
+                    <button id="finish-clients-btn" class="btn btn-primary" type="button">
+                      Finalizar Clientes →
+                    </button>
+                  </div>
+
+                  <form id="cargo-item-form" class="inline-form">
+                    <label>Lata
+                      <select id="can-select" required></select>
+                    </label>
+                    <label>Quantidade
+                      <input id="quantity-input" type="number" min="1" value="1" required />
+                    </label>
+                    <button type="submit" class="btn btn-primary">Adicionar Item</button>
+                  </form>
+
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Cliente</th>
+                        <th>Lata</th>
+                        <th>Qtd</th>
+                        <th>Volume unit.</th>
+                        <th>Subtotal</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="cargo-body"></tbody>
+                  </table>
+                </div>
+
+                <div id="launch-section" style="display:none;">
+                  <div class="schedule-row">
+                    <label>Data inicial
+                      <input id="order-start-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
+                    </label>
+                    <label>Data final
+                      <input id="order-end-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
+                    </label>
+                    <input id="order-date-input" type="hidden" />
+                    <p id="date-availability-hint" class="hint">Selecione o período para verificar disponibilidade de caminhões.</p>
+                  </div>
+
+                  <div class="calc-mode-switch">
+                    <input type="radio" id="mode-automatic" name="calculationMode" value="automatic" checked />
+                    <label for="mode-automatic">Automático</label>
+                    <input type="radio" id="mode-manual" name="calculationMode" value="manual" />
+                    <label for="mode-manual">Manual</label>
+                  </div>
+
+                  <div id="automatic-calc-panel">
+                    <button id="calculate-btn" class="btn btn-dark">Calcular no modo automático</button>
+                    <div id="calculation-result" class="result-box hidden"></div>
+                  </div>
+
+                  <div id="manual-calc-panel" class="manual-area hidden">
+                    <h3>Seleção manual de caminhões</h3>
+                    <label>Distribuição da carga
+                      <select id="manual-distribution-type">
+                        <option value="single">Toda carga em 1 caminhão</option>
+                        <option value="multi">Distribuir em mais de 1 caminhão</option>
+                      </select>
+                    </label>
+
+                    <form id="manual-truck-form" class="manual-inline-form">
+                      <label>Caminhão
+                        <select id="manual-truck-select" required></select>
+                      </label>
+                      <button id="manual-calc-btn" type="submit" class="btn btn-primary">Simular manual</button>
+                    </form>
+
+                    <div id="manual-multi-panel" class="hidden">
+                      <div id="manual-allocation-list" class="allocation-list"></div>
+                      <div class="manual-multi-actions">
+                        <button id="add-manual-allocation-btn" type="button" class="row-action">Adicionar caminhão</button>
+                        <button id="manual-multi-calc-btn" type="button" class="btn btn-primary">Simular distribuição manual</button>
+                      </div>
+                    </div>
+
+                    <div id="manual-result" class="result-box hidden"></div>
+                  </div>
+
+                  <div class="order-launch-area">
+                    <button id="launch-order-btn" class="btn btn-primary" type="button">Lançar pedido com carga atual</button>
+                  </div>
                 </div>
               </article>
             </section>
@@ -265,6 +316,7 @@
                     <thead>
                       <tr>
                         <th>Nome</th>
+                        <th>Categoria</th>
                         <th>Formato</th>
                         <th>Volume</th>
                       </tr>
@@ -345,6 +397,100 @@
               </section>
             </section>
 
+            <section id="clientes-section" class="view-pane hidden">
+              <div class="section-head">
+                <div>
+                  <span class="eyebrow">CRM</span>
+                  <h2>Gerenciamento de Clientes</h2>
+                  <p>Cadastre, gerencie e acompanhe o histórico de todos os seus clientes.</p>
+                </div>
+                <button class="btn btn-primary" id="add-client-btn">+ Novo Cliente</button>
+              </div>
+
+              <div class="client-stats-overview">
+                <div class="stat-card">
+                  <div class="stat-value" id="total-clients">0</div>
+                  <div class="stat-label">Total de Clientes</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-value" id="active-clients">0</div>
+                  <div class="stat-label">Clientes Ativos</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-value" id="new-clients-month">0</div>
+                  <div class="stat-label">Novos este Mês</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-value" id="total-orders">0</div>
+                  <div class="stat-label">Total de Pedidos</div>
+                </div>
+              </div>
+
+              <div class="client-filters">
+                <div class="filter-group">
+                  <input type="text" id="client-search" placeholder="🔍 Buscar cliente por nome, email ou CNPJ..." />
+                  <select id="client-status-filter">
+                    <option value="">Todos os status</option>
+                    <option value="active">✅ Ativos</option>
+                    <option value="inactive">⏸️ Inativos</option>
+                    <option value="suspended">🚫 Suspensos</option>
+                  </select>
+                  <select id="client-state-filter">
+                    <option value="">Todos os estados</option>
+                    <option value="AC">AC</option>
+                    <option value="AL">AL</option>
+                    <option value="AP">AP</option>
+                    <option value="AM">AM</option>
+                    <option value="BA">BA</option>
+                    <option value="CE">CE</option>
+                    <option value="DF">DF</option>
+                    <option value="ES">ES</option>
+                    <option value="GO">GO</option>
+                    <option value="MA">MA</option>
+                    <option value="MT">MT</option>
+                    <option value="MS">MS</option>
+                    <option value="MG">MG</option>
+                    <option value="PA">PA</option>
+                    <option value="PB">PB</option>
+                    <option value="PR">PR</option>
+                    <option value="PE">PE</option>
+                    <option value="PI">PI</option>
+                    <option value="RJ">RJ</option>
+                    <option value="RN">RN</option>
+                    <option value="RS">RS</option>
+                    <option value="RO">RO</option>
+                    <option value="RR">RR</option>
+                    <option value="SC">SC</option>
+                    <option value="SP">SP</option>
+                    <option value="SE">SE</option>
+                    <option value="TO">TO</option>
+                  </select>
+                </div>
+                <div class="filter-actions">
+                  <button class="btn btn-secondary" id="export-clients-btn">📥 Exportar</button>
+                  <button class="btn btn-secondary" id="refresh-clients-btn">🔄 Atualizar</button>
+                </div>
+              </div>
+
+              <div class="table-wrap table-wrap-large">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Cliente</th>
+                      <th>Contato</th>
+                      <th>Telefone</th>
+                      <th>Localização</th>
+                      <th>Status</th>
+                      <th>Pedidos</th>
+                      <th>Última Compra</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody id="clients-body"></tbody>
+                </table>
+              </div>
+            </section>
+
             <section id="agenda-section" class="view-pane hidden">
               <article class="card agenda-panel">
                 <div class="section-head">
@@ -409,6 +555,127 @@
 
               <div class="admin-grid">
                 <article class="card">
+                  <h3>Gerenciamento de Clientes</h3>
+                  <form id="client-form" class="grid-form">
+                    <label>Nome do Cliente
+                      <input name="name" required placeholder="Nome completo ou razão social" />
+                    </label>
+                    <label>Email
+                      <input name="email" type="email" placeholder="email@exemplo.com" />
+                    </label>
+                    <label>Telefone
+                      <input name="phone" placeholder="(00) 00000-0000" />
+                    </label>
+                    <label>CNPJ/CPF
+                      <input name="cnpj_cpf" placeholder="00.000.000/0000-00" />
+                    </label>
+                    <label>Contato
+                      <input name="contact_person" placeholder="Nome do contato principal" />
+                    </label>
+                    <label>Endereço
+                      <input name="address" placeholder="Rua, número, bairro" />
+                    </label>
+                    <label>Cidade
+                      <input name="city" placeholder="Cidade" />
+                    </label>
+                    <label>Estado
+                      <select name="state">
+                        <option value="">Selecione...</option>
+                        <option value="AC">AC</option>
+                        <option value="AL">AL</option>
+                        <option value="AP">AP</option>
+                        <option value="AM">AM</option>
+                        <option value="BA">BA</option>
+                        <option value="CE">CE</option>
+                        <option value="DF">DF</option>
+                        <option value="ES">ES</option>
+                        <option value="GO">GO</option>
+                        <option value="MA">MA</option>
+                        <option value="MT">MT</option>
+                        <option value="MS">MS</option>
+                        <option value="MG">MG</option>
+                        <option value="PA">PA</option>
+                        <option value="PB">PB</option>
+                        <option value="PR">PR</option>
+                        <option value="PE">PE</option>
+                        <option value="PI">PI</option>
+                        <option value="RJ">RJ</option>
+                        <option value="RN">RN</option>
+                        <option value="RS">RS</option>
+                        <option value="RO">RO</option>
+                        <option value="RR">RR</option>
+                        <option value="SC">SC</option>
+                        <option value="SP">SP</option>
+                        <option value="SE">SE</option>
+                        <option value="TO">TO</option>
+                      </select>
+                    </label>
+                    <label>Status
+                      <select name="status">
+                        <option value="active">Ativo</option>
+                        <option value="inactive">Inativo</option>
+                        <option value="suspended">Suspenso</option>
+                      </select>
+                    </label>
+                    <label>Observações
+                      <textarea name="notes" rows="3" placeholder="Informações adicionais sobre o cliente"></textarea>
+                    </label>
+                    <button class="btn btn-primary" type="submit">Cadastrar Cliente</button>
+                  </form>
+                </article>
+
+                <article class="card">
+                  <h3>Lista de Clientes</h3>
+                  <div class="client-filters">
+                    <input type="text" id="client-search" placeholder="Buscar cliente..." />
+                    <select id="client-status-filter">
+                      <option value="">Todos os status</option>
+                      <option value="active">Ativos</option>
+                      <option value="inactive">Inativos</option>
+                      <option value="suspended">Suspensos</option>
+                    </select>
+                  </div>
+                  <div class="table-wrap table-wrap-large">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Nome</th>
+                          <th>Contato</th>
+                          <th>Telefone</th>
+                          <th>Cidade/UF</th>
+                          <th>Status</th>
+                          <th>Pedidos</th>
+                          <th>Última Compra</th>
+                          <th>Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody id="clients-body"></tbody>
+                    </table>
+                  </div>
+                </article>
+
+                <article class="card">
+                  <h3>Categorias de Embalagens</h3>
+                  <form id="category-form" class="grid-form">
+                    <label>Nome da Categoria
+                      <input name="name" required placeholder="Ex: Baldes, Galões, etc." />
+                    </label>
+                    <button class="btn btn-primary" type="submit">Adicionar Categoria</button>
+                  </form>
+                  <div class="table-wrap table-wrap-medium">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Nome</th>
+                          <th>Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody id="categories-body"></tbody>
+                    </table>
+                  </div>
+                </article>
+
+                <article class="card">
                   <h3>Novo usuário</h3>
                   <form id="user-form" class="grid-form">
                     <label>Nome
@@ -447,6 +714,11 @@
                   <form id="can-form" class="grid-form">
                     <label>Nome
                       <input name="name" required />
+                    </label>
+                    <label>Categoria
+                      <select name="categoryId" id="category-select">
+                        <option value="">Sem categoria</option>
+                      </select>
                     </label>
                     <label>Formato
                       <select name="shape" id="shape-select">
@@ -518,6 +790,86 @@
         <div class="modal-actions">
           <button id="confirm-modal-cancel-btn" type="button" class="row-action">Cancelar</button>
           <button id="confirm-modal-confirm-btn" type="button" class="btn btn-primary">Confirmar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="client-modal-overlay" class="modal-overlay hidden">
+      <div class="modal-card modal-card-large" role="dialog" aria-modal="true" aria-labelledby="client-modal-title">
+        <div class="modal-header">
+          <h3 id="client-modal-title">Cadastrar Cliente</h3>
+          <button id="close-client-modal-btn" class="row-action" type="button">Fechar</button>
+        </div>
+        <div class="modal-body">
+          <form id="client-modal-form" class="grid-form">
+            <label>Nome do Cliente *
+              <input name="name" required placeholder="Nome completo ou razão social" />
+            </label>
+            <label>Email
+              <input name="email" type="email" placeholder="email@exemplo.com" />
+            </label>
+            <label>Telefone
+              <input name="phone" placeholder="(00) 00000-0000" />
+            </label>
+            <label>CNPJ/CPF
+              <input name="cnpj_cpf" placeholder="00.000.000/0000-00" />
+            </label>
+            <label>Contato Principal
+              <input name="contact_person" placeholder="Nome do contato principal" />
+            </label>
+            <label>Endereço
+              <input name="address" placeholder="Rua, número, bairro" />
+            </label>
+            <label>Cidade
+              <input name="city" placeholder="Cidade" />
+            </label>
+            <label>Estado
+              <select name="state">
+                <option value="">Selecione...</option>
+                <option value="AC">AC</option>
+                <option value="AL">AL</option>
+                <option value="AP">AP</option>
+                <option value="AM">AM</option>
+                <option value="BA">BA</option>
+                <option value="CE">CE</option>
+                <option value="DF">DF</option>
+                <option value="ES">ES</option>
+                <option value="GO">GO</option>
+                <option value="MA">MA</option>
+                <option value="MT">MT</option>
+                <option value="MS">MS</option>
+                <option value="MG">MG</option>
+                <option value="PA">PA</option>
+                <option value="PB">PB</option>
+                <option value="PR">PR</option>
+                <option value="PE">PE</option>
+                <option value="PI">PI</option>
+                <option value="RJ">RJ</option>
+                <option value="RN">RN</option>
+                <option value="RS">RS</option>
+                <option value="RO">RO</option>
+                <option value="RR">RR</option>
+                <option value="SC">SC</option>
+                <option value="SP">SP</option>
+                <option value="SE">SE</option>
+                <option value="TO">TO</option>
+              </select>
+            </label>
+            <label>Status
+              <select name="status">
+                <option value="active">✅ Ativo</option>
+                <option value="inactive">⏸️ Inativo</option>
+                <option value="suspended">🚫 Suspenso</option>
+              </select>
+            </label>
+            <label>Observações
+              <textarea name="notes" rows="3" placeholder="Informações adicionais sobre o cliente"></textarea>
+            </label>
+            <div class="modal-actions">
+              <button type="button" id="cancel-client-btn" class="row-action">Cancelar</button>
+              <button type="submit" class="btn btn-primary">Salvar Cliente</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>

@@ -4,6 +4,9 @@ const state = {
   trucks: [],
   users: [],
   orders: [],
+  categories: [],
+  clients: [],
+  selectedClientId: null,
   cargoItems: [],
   selectedCanId: null,
   selectedTruckId: null,
@@ -49,6 +52,7 @@ const resultBox = document.getElementById('calculation-result');
 
 const loginForm = document.getElementById('login-form');
 const userForm = document.getElementById('user-form');
+const categoryForm = document.getElementById('category-form');
 const canForm = document.getElementById('can-form');
 const truckForm = document.getElementById('truck-form');
 const cargoItemForm = document.getElementById('cargo-item-form');
@@ -71,11 +75,27 @@ const agendaEndDateInput = document.getElementById('agenda-end-date-input');
 const agendaRefreshBtn = document.getElementById('agenda-refresh-btn');
 
 const canSelect = document.getElementById('can-select');
+const selectedClient = document.getElementById('selected-client');
+const newClientLabel = document.getElementById('new-client-label');
+const newClientInput = document.getElementById('new-client-input');
+const createClientBtn = document.getElementById('create-client-btn');
+const currentClientName = document.getElementById('current-client-name');
+const stepClient = document.getElementById('step-client');
+const stepItems = document.getElementById('step-items');
+const stepLaunch = document.getElementById('step-launch');
+const itemsSection = document.getElementById('items-section');
+const multiClientActions = document.getElementById('multi-client-actions');
+const addMoreClientsBtn = document.getElementById('add-more-clients-btn');
+const finishClientsBtn = document.getElementById('finish-clients-btn');
+const launchSection = document.getElementById('launch-section');
+const clientInput = document.getElementById('client-input');
 const quantityInput = document.getElementById('quantity-input');
 const manualTruckSelect = document.getElementById('manual-truck-select');
 const manualAllocationList = document.getElementById('manual-allocation-list');
 const cargoBody = document.getElementById('cargo-body');
 const cansBody = document.getElementById('cans-body');
+const categoriesBody = document.getElementById('categories-body');
+const clientsBody = document.getElementById('clients-body');
 const trucksBody = document.getElementById('trucks-body');
 const usersBody = document.getElementById('users-body');
 const ordersBody = document.getElementById('orders-body');
@@ -90,6 +110,17 @@ const confirmModalTitle = document.getElementById('confirm-modal-title');
 const confirmModalContent = document.getElementById('confirm-modal-content');
 const confirmModalCancelBtn = document.getElementById('confirm-modal-cancel-btn');
 const confirmModalConfirmBtn = document.getElementById('confirm-modal-confirm-btn');
+const clientModalOverlay = document.getElementById('client-modal-overlay');
+const closeClientModalBtn = document.getElementById('close-client-modal-btn');
+const clientModalTitle = document.getElementById('client-modal-title');
+const clientModalForm = document.getElementById('client-modal-form');
+const cancelClientBtn = document.getElementById('cancel-client-btn');
+const addClientBtn = document.getElementById('add-client-btn');
+const clientSearch = document.getElementById('client-search');
+const clientStatusFilter = document.getElementById('client-status-filter');
+const clientStateFilter = document.getElementById('client-state-filter');
+const exportClientsBtn = document.getElementById('export-clients-btn');
+const refreshClientsBtn = document.getElementById('refresh-clients-btn');
 const calculationModeInputs = document.querySelectorAll('input[name="calculationMode"]');
 const sideNavItems = document.querySelectorAll('.nav-list li[data-target]');
 const navAdminItem = document.getElementById('nav-admin-item');
@@ -128,14 +159,27 @@ function bindEvents() {
   logoutBtn.addEventListener('click', onLogout);
   accountMenuToggle?.addEventListener('click', onAccountMenuToggle);
   userForm.addEventListener('submit', onCreateUser);
+  categoryForm.addEventListener('submit', onCreateCategory);
   canForm.addEventListener('submit', onCreateCan);
   truckForm.addEventListener('submit', onCreateTruck);
   cargoItemForm.addEventListener('submit', onAddCargoItem);
   calculateBtn.addEventListener('click', onCalculateAutomatic);
+  selectedClient.addEventListener('change', onSelectedClientChange);
+  createClientBtn.addEventListener('click', onCreateNewClient);
+  addMoreClientsBtn.addEventListener('click', onAddMoreClients);
+  finishClientsBtn.addEventListener('click', onFinishClients);
   manualTruckForm.addEventListener('submit', onManualSingleSimulation);
   manualMultiCalcBtn.addEventListener('click', onManualMultiSimulation);
   addManualAllocationBtn.addEventListener('click', onAddManualAllocation);
   launchOrderBtn.addEventListener('click', onLaunchOrder);
+  addClientBtn.addEventListener('click', onOpenClientModal);
+  closeClientModalBtn.addEventListener('click', onCloseClientModal);
+  cancelClientBtn.addEventListener('click', onCloseClientModal);
+  clientModalForm.addEventListener('submit', onSaveClient);
+  clientSearch.addEventListener('input', onClientSearch);
+  clientStatusFilter.addEventListener('change', onClientFilter);
+  clientStateFilter.addEventListener('change', onClientFilter);
+  refreshClientsBtn.addEventListener('click', onRefreshClients);
   orderStartDateInput.addEventListener('change', onOrderDateChange);
   orderEndDateInput.addEventListener('change', onOrderDateChange);
   agendaStartDateInput?.addEventListener('change', onAgendaRangeChange);
@@ -246,19 +290,23 @@ async function onLogout() {
 
 async function loadData() {
   const todayIso = getTodayDateIso();
-  const [canRes, truckRes, ordersRes, todayAvailabilityRes] = await Promise.all([
+  const [canRes, categoryRes, clientRes, truckRes, ordersRes, todayAvailabilityRes] = await Promise.all([
     api('/api/cans'),
+    api('/api/can-categories'),
+    api('/api/clients'),
     api('/api/trucks'),
     api('/api/orders'),
     api(`/api/truck-availability?startDate=${encodeURIComponent(todayIso)}&endDate=${encodeURIComponent(todayIso)}`)
   ]);
 
-  if (!canRes.ok || !truckRes.ok || !ordersRes.ok) {
+  if (!canRes.ok || !categoryRes.ok || !clientRes.ok || !truckRes.ok || !ordersRes.ok) {
     showToast('Erro ao carregar dados iniciais.');
     return;
   }
 
   state.cans = canRes.data.cans;
+  state.categories = categoryRes.data.categories;
+  state.clients = clientRes.data.clients;
   state.trucks = truckRes.data.trucks;
   state.orders = ordersRes.data.orders;
   state.todayBusyTruckIds = todayAvailabilityRes.ok ? todayAvailabilityRes.data.busyTruckIds || [] : [];
@@ -327,6 +375,8 @@ function renderApp() {
 
   renderHomeOverview();
   renderCans();
+  renderCategories();
+  renderClients();
   renderTrucks();
   renderDateAvailabilityHint();
   renderUsers();
@@ -646,6 +696,19 @@ function buildOverviewListHtml(items, emptyMessage) {
 function renderCans() {
   cansBody.innerHTML = '';
   canSelect.innerHTML = '';
+  
+  // Popular select de categorias no formulário de latas
+  const categorySelect = document.getElementById('category-select');
+  if (categorySelect) {
+    categorySelect.innerHTML = '<option value="">Sem categoria</option>';
+    for (const category of state.categories) {
+      const option = document.createElement('option');
+      option.value = category.id;
+      option.textContent = category.name;
+      categorySelect.appendChild(option);
+    }
+  }
+  
   const hasSelection = state.cans.some((can) => can.id === state.selectedCanId);
   if (!hasSelection) {
     state.selectedCanId = state.cans[0]?.id ?? null;
@@ -662,6 +725,7 @@ function renderCans() {
     }
     tr.innerHTML = `
       <td>${escapeHtml(can.name)}</td>
+      <td>${escapeHtml(can.category_name || 'Sem categoria')}</td>
       <td>${can.shape === 'square' ? 'Quadrada' : 'Cilíndrica'}</td>
       <td>${formatVolume(can.volume_cm3)}</td>
     `;
@@ -743,6 +807,136 @@ function renderTrucks() {
   }
 
   renderManualAllocationRows();
+}
+
+function renderCategories() {
+  categoriesBody.innerHTML = '';
+  if (state.user?.role !== 'admin') return;
+
+  for (const category of state.categories) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(category.name)}</td>
+      <td>
+        <button class="row-action danger" onclick="onDeleteCategory(${category.id}, '${escapeHtml(category.name)}')">Excluir</button>
+      </td>
+    `;
+    categoriesBody.appendChild(tr);
+  }
+}
+
+async function onDeleteCategory(categoryId, categoryName) {
+  if (!confirm(`Tem certeza que deseja excluir a categoria "${categoryName}"?`)) {
+    return;
+  }
+
+  const response = await api(`/api/can-categories/${categoryId}`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    showToast(response.data.error || 'Não foi possível excluir a categoria.');
+    return;
+  }
+
+  showToast('Categoria excluída com sucesso!');
+  await loadData();
+  renderApp();
+}
+
+function renderClients() {
+  clientsBody.innerHTML = '';
+  
+  // Atualizar estatísticas
+  updateClientStats();
+  
+  // Filtrar clientes
+  let filteredClients = [...state.clients];
+  
+  const searchTerm = clientSearch?.value.toLowerCase() || '';
+  const statusFilter = clientStatusFilter?.value || '';
+  const stateFilter = clientStateFilter?.value || '';
+  
+  if (searchTerm) {
+    filteredClients = filteredClients.filter(client => 
+      client.name.toLowerCase().includes(searchTerm) ||
+      (client.email && client.email.toLowerCase().includes(searchTerm)) ||
+      (client.cnpj_cpf && client.cnpj_cpf.toLowerCase().includes(searchTerm)) ||
+      (client.contact_person && client.contact_person.toLowerCase().includes(searchTerm))
+    );
+  }
+  
+  if (statusFilter) {
+    filteredClients = filteredClients.filter(client => client.status === statusFilter);
+  }
+  
+  if (stateFilter) {
+    filteredClients = filteredClients.filter(client => client.state === stateFilter);
+  }
+  
+  if (!filteredClients.length) {
+    clientsBody.innerHTML = '<tr><td colspan="8" class="text-center">Nenhum cliente encontrado.</td></tr>';
+    return;
+  }
+  
+  filteredClients.forEach(client => {
+    const tr = document.createElement('tr');
+    const statusClass = client.status;
+    const statusText = client.status === 'active' ? '✅ Ativo' : 
+                      client.status === 'inactive' ? '⏸️ Inativo' : '🚫 Suspenso';
+    
+    tr.innerHTML = `
+      <td>
+        <div style="font-weight: 600; color: var(--text);">${escapeHtml(client.name)}</div>
+        ${client.contact_person ? `<div style="font-size: 0.85rem; color: var(--muted);">${escapeHtml(client.contact_person)}</div>` : ''}
+      </td>
+      <td>${client.email ? `<a href="mailto:${escapeHtml(client.email)}" style="color: var(--brand-yellow);">${escapeHtml(client.email)}</a>` : '-'}</td>
+      <td>${client.phone || '-'}</td>
+      <td>${client.city && client.state ? `${escapeHtml(client.city)}/${client.state}` : '-'}</td>
+      <td><span class="client-status ${statusClass}">${statusText}</span></td>
+      <td>
+        <div style="font-weight: 600;">${client.total_orders || 0}</div>
+        ${client.last_order_date ? `<div style="font-size: 0.75rem; color: var(--muted);">${formatDate(client.last_order_date)}</div>` : '<div style="font-size: 0.75rem; color: var(--muted);">Nenhuma compra</div>'}
+      </td>
+      <td>${client.last_order_date ? formatDate(client.last_order_date) : '-'}</td>
+      <td>
+        <div class="client-actions">
+          <button class="btn btn-view" onclick="onViewClient(${client.id})">👁️</button>
+          <button class="btn btn-edit" onclick="onEditClient(${client.id})">✏️</button>
+          <button class="btn btn-delete" onclick="onDeleteClient(${client.id}, '${escapeHtml(client.name)}')">🗑️</button>
+        </div>
+      </td>
+    `;
+    
+    clientsBody.appendChild(tr);
+  });
+}
+
+function updateClientStats() {
+  const totalClients = state.clients.length;
+  const activeClients = state.clients.filter(c => c.status === 'active').length;
+  
+  // Calcular novos clientes este mês
+  const currentMonth = new Date().getMonth();
+  const currentYear = new Date().getFullYear();
+  const newClientsMonth = state.clients.filter(c => {
+    const createdDate = new Date(c.created_at);
+    return createdDate.getMonth() === currentMonth && createdDate.getFullYear() === currentYear;
+  }).length;
+  
+  // Total de pedidos (soma de todos os clientes)
+  const totalOrders = state.clients.reduce((sum, client) => sum + (client.total_orders || 0), 0);
+  
+  // Atualizar os cards
+  const totalClientsEl = document.getElementById('total-clients');
+  const activeClientsEl = document.getElementById('active-clients');
+  const newClientsMonthEl = document.getElementById('new-clients-month');
+  const totalOrdersEl = document.getElementById('total-orders');
+  
+  if (totalClientsEl) totalClientsEl.textContent = totalClients;
+  if (activeClientsEl) activeClientsEl.textContent = activeClients;
+  if (newClientsMonthEl) newClientsMonthEl.textContent = newClientsMonth;
+  if (totalOrdersEl) totalOrdersEl.textContent = totalOrders;
 }
 
 function renderUsers() {
@@ -1065,21 +1259,74 @@ function renderCargoBuilder() {
   resultBox.classList.add('hidden');
   manualResultBox.classList.add('hidden');
 
-  state.cargoItems.forEach((item, index) => {
-    const can = state.cans.find((entry) => entry.id === item.canId);
-    if (!can) return;
+  // Popular select de clientes
+  selectedClient.innerHTML = '<option value="">Selecione um cliente...</option><option value="_new">+ Criar novo cliente</option>';
+  for (const client of state.clients) {
+    const option = document.createElement('option');
+    option.value = client.id;
+    option.textContent = client.name;
+    selectedClient.appendChild(option);
+  }
 
-    const subtotal = can.volume_cm3 * item.quantity;
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${escapeHtml(can.name)}</td>
-      <td>${item.quantity}</td>
-      <td>${formatVolume(can.volume_cm3)}</td>
-      <td>${formatVolume(subtotal)}</td>
-      <td><button class="remove-btn" data-index="${index}" type="button">Remover</button></td>
-    `;
+  // Se não tiver itens, mostrar mensagem diferente
+  if (!state.cargoItems.length) {
+    cargoBody.innerHTML = '<tr><td colspan="6" class="text-center">Nenhum item na carga. Selecione um cliente e adicione itens.</td></tr>';
+    return;
+  }
 
-    cargoBody.appendChild(tr);
+  // Agrupar itens por cliente para exibição
+  const itemsByClient = {};
+  state.cargoItems.forEach(item => {
+    if (!itemsByClient[item.clientName]) {
+      itemsByClient[item.clientName] = [];
+    }
+    itemsByClient[item.clientName].push(item);
+  });
+
+  // Mostrar/esconder botões de múltiplos clientes
+  if (Object.keys(itemsByClient).length > 0) {
+    multiClientActions.style.display = 'block';
+  } else {
+    multiClientActions.style.display = 'none';
+  }
+
+  let isFirstClient = true;
+  Object.entries(itemsByClient).forEach(([clientName, items]) => {
+    // Adicionar header do cliente se tiver múltiplos clientes
+    if (Object.keys(itemsByClient).length > 1) {
+      const headerRow = document.createElement('tr');
+      headerRow.innerHTML = `
+        <td colspan="6" style="background: var(--brand-yellow); color: var(--brand-black); font-weight: 700; padding: 12px 16px;">
+          📦 Cliente: ${clientName || 'Sem nome'}
+        </td>
+      `;
+      cargoBody.appendChild(headerRow);
+    }
+
+    // Adicionar itens do cliente
+    items.forEach((item, index) => {
+      const can = state.cans.find((entry) => entry.id === item.canId);
+      if (!can) return;
+
+      const subtotal = can.volume_cm3 * item.quantity;
+      const globalIndex = state.cargoItems.indexOf(item);
+      const tr = document.createElement('tr');
+      
+      // Se for múltiplos clientes, mostrar o nome, senão não mostra
+      const clientCell = Object.keys(itemsByClient).length > 1 ? 
+        `<td>${escapeHtml(clientName || 'Sem nome')}</td>` : '';
+      
+      tr.innerHTML = `
+        ${clientCell}
+        <td>${escapeHtml(can.name)}</td>
+        <td>${item.quantity}</td>
+        <td>${formatVolume(can.volume_cm3)}</td>
+        <td>${formatVolume(subtotal)}</td>
+        <td><button class="remove-btn" data-index="${globalIndex}" type="button">Remover</button></td>
+      `;
+
+      cargoBody.appendChild(tr);
+    });
   });
 
   cargoBody.querySelectorAll('.remove-btn').forEach((button) => {
@@ -1087,6 +1334,12 @@ function renderCargoBuilder() {
       state.cargoItems.splice(Number(button.dataset.index), 1);
       state.lastCalculation = null;
       renderCargoBuilder();
+      
+      // Esconder seção de lançamento se não tiver mais itens
+      if (state.cargoItems.length === 0) {
+        launchSection.style.display = 'none';
+        updateProgress('items');
+      }
     });
   });
 }
@@ -1156,15 +1409,32 @@ async function openOrderModal(orderId) {
   entityModalTitle.textContent = `Pedido #${order.id}`;
 
   const itemsRows = items
-    .map((item) => {
+    .map((clientGroup) => {
+      const clientRows = clientGroup.items
+        .map((item) => {
+          return `
+            <tr>
+              <td>${escapeHtml(item.can_name)}</td>
+              <td>${item.can_shape === 'square' ? 'Quadrada' : 'Cilíndrica'}</td>
+              <td>${item.quantity}</td>
+              <td>${formatVolume(item.unit_volume_cm3)}</td>
+              <td>${formatVolume(item.total_volume_cm3)}</td>
+            </tr>
+          `;
+        })
+        .join('');
+
       return `
-        <tr>
-          <td>${escapeHtml(item.can_name)}</td>
-          <td>${item.can_shape === 'square' ? 'Quadrada' : 'Cilíndrica'}</td>
-          <td>${item.quantity}</td>
-          <td>${formatVolume(item.unit_volume_cm3)}</td>
-          <td>${formatVolume(item.total_volume_cm3)}</td>
+        <tr class="client-group-header">
+          <td colspan="5"><strong>Cliente: ${escapeHtml(clientGroup.clientName)}</strong></td>
         </tr>
+        <tr class="client-group-subheader">
+          <td><em>Resumo do cliente:</em></td>
+          <td colspan="2"><em>${clientGroup.totalCans} latas</em></td>
+          <td colspan="2"><em>${formatVolume(clientGroup.totalVolumeCm3)}</em></td>
+        </tr>
+        ${clientRows}
+        <tr class="client-group-spacer"><td colspan="5"></td></tr>
       `;
     })
     .join('');
@@ -1328,6 +1598,17 @@ function openOrderEditModal(order, items) {
       const wrapper = document.createElement('div');
       wrapper.className = 'allocation-row';
 
+      const clientLabel = document.createElement('label');
+      clientLabel.textContent = 'Cliente';
+      const clientInput = document.createElement('input');
+      clientInput.type = 'text';
+      clientInput.placeholder = 'Nome do cliente (opcional)';
+      clientInput.value = String(row.clientName || '');
+      clientInput.addEventListener('input', () => {
+        row.clientName = clientInput.value.trim();
+      });
+      clientLabel.appendChild(clientInput);
+
       const canLabel = document.createElement('label');
       canLabel.textContent = 'Lata';
       const canSelect = document.createElement('select');
@@ -1370,6 +1651,7 @@ function openOrderEditModal(order, items) {
         renderRows();
       });
 
+      wrapper.appendChild(clientLabel);
       wrapper.appendChild(canLabel);
       wrapper.appendChild(qtyLabel);
       wrapper.appendChild(removeBtn);
@@ -1383,7 +1665,8 @@ function openOrderEditModal(order, items) {
     rows.push({
       id: nextRowId++,
       canId: state.cans[0]?.id ?? null,
-      quantity: 1
+      quantity: 1,
+      clientName: ''
     });
     renderRows();
   });
@@ -1399,7 +1682,8 @@ function openOrderEditModal(order, items) {
       items: rows
         .map((row) => ({
           canId: Number(row.canId),
-          quantity: Number(row.quantity)
+          quantity: Number(row.quantity),
+          clientName: row.clientName || null
         }))
         .filter((row) => Number.isInteger(row.canId) && Number.isInteger(row.quantity) && row.quantity > 0)
     };
@@ -1743,6 +2027,29 @@ function getUserInitials(name) {
   return initials || 'C';
 }
 
+async function onCreateCategory(event) {
+  event.preventDefault();
+  const form = new FormData(categoryForm);
+  const payload = {
+    name: form.get('name')
+  };
+
+  const response = await api('/api/can-categories', {
+    method: 'POST',
+    body: payload
+  });
+
+  if (!response.ok) {
+    showToast(response.data.error || 'Não foi possível criar a categoria.');
+    return;
+  }
+
+  categoryForm.reset();
+  showToast('Categoria criada com sucesso!');
+  await loadData();
+  renderApp();
+}
+
 async function onCreateUser(event) {
   event.preventDefault();
   const form = new FormData(userForm);
@@ -1813,7 +2120,235 @@ async function onCreateTruck(event) {
   showToast('Caminhão cadastrado.');
 }
 
-function onAddCargoItem(event) {
+function updateProgress(currentStep) {
+  // Resetar todos os steps
+  [stepClient, stepItems, stepLaunch].forEach(step => {
+    step.classList.remove('active', 'completed');
+  });
+
+  // Marcar steps completados
+  if (currentStep === 'items' || currentStep === 'launch') {
+    stepClient.classList.add('completed');
+  }
+  if (currentStep === 'launch') {
+    stepItems.classList.add('completed');
+  }
+
+  // Marcar step atual
+  if (currentStep === 'client') {
+    stepClient.classList.add('active');
+  } else if (currentStep === 'items') {
+    stepItems.classList.add('active');
+  } else if (currentStep === 'launch') {
+    stepLaunch.classList.add('active');
+  }
+}
+
+function onSelectedClientChange() {
+  const selectedValue = selectedClient.value;
+  
+  if (selectedValue === '_new') {
+    // Mostrar campo para criar novo cliente
+    newClientLabel.style.display = 'block';
+    newClientInput.required = true;
+    itemsSection.style.display = 'none';
+    launchSection.style.display = 'none';
+    state.selectedClientId = null;
+    updateProgress('client');
+  } else if (selectedValue) {
+    // Selecionar cliente existente
+    const selectedClientObj = state.clients.find(c => c.id == selectedValue);
+    newClientLabel.style.display = 'none';
+    itemsSection.style.display = 'block';
+    launchSection.style.display = 'none';
+    state.selectedClientId = Number(selectedValue);
+    
+    if (selectedClientObj) {
+      currentClientName.textContent = selectedClientObj.name;
+    }
+    updateProgress('items');
+    renderCargoBuilder();
+  } else {
+    // Limpar seleção - mas manter itens existentes
+    newClientLabel.style.display = 'none';
+    itemsSection.style.display = 'block';
+    launchSection.style.display = 'none';
+    state.selectedClientId = null;
+    currentClientName.textContent = 'Todos os Clientes';
+    updateProgress('items');
+    renderCargoBuilder();
+  }
+}
+
+async function onCreateNewClient() {
+  const clientName = newClientInput.value.trim();
+  
+  if (!clientName) {
+    showToast('Digite o nome do cliente.');
+    return;
+  }
+
+  const response = await api('/api/clients', {
+    method: 'POST',
+    body: { name: clientName }
+  });
+
+  if (!response.ok) {
+    showToast(response.data.error || 'Não foi possível criar o cliente.');
+    return;
+  }
+
+  // Atualizar lista de clientes e selecionar o novo cliente
+  await loadData();
+  const newClient = state.clients.find(c => c.name === clientName);
+  if (newClient) {
+    selectedClient.value = newClient.id;
+    onSelectedClientChange();
+    showToast(`Cliente "${clientName}" criado com sucesso!`);
+  }
+}
+
+function onAddMoreClients() {
+  // Resetar seleção de cliente para permitir adicionar outro
+  selectedClient.value = '';
+  state.selectedClientId = null;
+  currentClientName.textContent = 'Selecione outro cliente...';
+  onSelectedClientChange();
+  showToast('Agora selecione outro cliente para adicionar mais itens.');
+}
+
+function onFinishClients() {
+  // Mostrar seção de lançamento
+  if (state.cargoItems.length > 0) {
+    launchSection.style.display = 'block';
+    updateProgress('launch');
+    currentClientName.textContent = 'Todos os Clientes';
+    showToast('Todos os clientes adicionados. Configure datas e caminhões.');
+  } else {
+    showToast('Adicione pelo menos um item antes de finalizar.');
+  }
+}
+
+function onOpenClientModal() {
+  clientModalTitle.textContent = 'Cadastrar Novo Cliente';
+  clientModalForm.reset();
+  clientModalOverlay.classList.remove('hidden');
+}
+
+function onCloseClientModal() {
+  clientModalOverlay.classList.add('hidden');
+  clientModalForm.reset();
+}
+
+async function onSaveClient(event) {
+  event.preventDefault();
+  
+  const form = new FormData(clientModalForm);
+  const payload = {
+    name: form.get('name'),
+    email: form.get('email'),
+    phone: form.get('phone'),
+    address: form.get('address'),
+    city: form.get('city'),
+    state: form.get('state'),
+    cnpj_cpf: form.get('cnpj_cpf'),
+    contact_person: form.get('contact_person'),
+    status: form.get('status'),
+    notes: form.get('notes')
+  };
+
+  const response = await api('/api/clients', {
+    method: 'POST',
+    body: payload
+  });
+
+  if (!response.ok) {
+    showToast(response.data.error || 'Não foi possível cadastrar o cliente.');
+    return;
+  }
+
+  onCloseClientModal();
+  showToast('Cliente cadastrado com sucesso!');
+  await loadData();
+  renderApp();
+}
+
+function onClientSearch() {
+  renderClients();
+}
+
+function onClientFilter() {
+  renderClients();
+}
+
+async function onRefreshClients() {
+  showToast('Atualizando clientes...');
+  await loadData();
+  renderClients();
+  showToast('Clientes atualizados!');
+}
+
+function onViewClient(clientId) {
+  const client = state.clients.find(c => c.id === clientId);
+  if (!client) return;
+  
+  // Implementar visualização do cliente
+  showToast(`Visualizando: ${client.name}`);
+}
+
+function onEditClient(clientId) {
+  const client = state.clients.find(c => c.id === clientId);
+  if (!client) return;
+  
+  // Implementar edição do cliente
+  showToast(`Editando: ${client.name}`);
+}
+
+async function onDeleteClient(clientId, clientName) {
+  if (!confirm(`Tem certeza que deseja excluir o cliente "${clientName}"?`)) {
+    return;
+  }
+
+  const response = await api(`/api/clients/${clientId}`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    showToast(response.data.error || 'Não foi possível excluir o cliente.');
+    return;
+  }
+
+  showToast('Cliente excluído com sucesso!');
+  await loadData();
+  renderApp();
+}
+
+function onOrderClientChange() {
+  const selectedValue = orderClientSelect.value;
+  
+  if (selectedValue === '_new') {
+    // Mostrar campo para criar novo cliente
+    clientInput.style.display = 'block';
+    clientInput.required = true;
+    clientInput.placeholder = 'Nome do novo cliente...';
+  } else if (selectedValue) {
+    // Ocultar campo e preencher com nome do cliente selecionado
+    const selectedClient = state.clients.find(c => c.id == selectedValue);
+    clientInput.style.display = 'none';
+    clientInput.required = false;
+    if (selectedClient) {
+      clientInput.value = selectedClient.name;
+    }
+  } else {
+    // Limpar tudo
+    clientInput.style.display = 'block';
+    clientInput.required = false;
+    clientInput.value = '';
+    clientInput.placeholder = 'Nome do cliente (opcional)';
+  }
+}
+
+async function onAddCargoItem(event) {
   event.preventDefault();
 
   const canId = Number(canSelect.value);
@@ -1824,11 +2359,23 @@ function onAddCargoItem(event) {
     return;
   }
 
-  const existing = state.cargoItems.find((item) => item.canId === canId);
+  let clientName = '';
+  
+  // Se tiver um cliente selecionado, usar o nome dele
+  if (state.selectedClientId) {
+    const selectedClientObj = state.clients.find(c => c.id === state.selectedClientId);
+    clientName = selectedClientObj ? selectedClientObj.name : '';
+  } else {
+    // Se não tiver cliente selecionado, não adicionar item
+    showToast('Selecione um cliente para adicionar itens.');
+    return;
+  }
+
+  const existing = state.cargoItems.find((item) => item.canId === canId && item.clientName === clientName);
   if (existing) {
     existing.quantity += quantity;
   } else {
-    state.cargoItems.push({ canId, quantity });
+    state.cargoItems.push({ canId, quantity, clientName });
   }
 
   quantityInput.value = '1';
@@ -1836,6 +2383,12 @@ function onAddCargoItem(event) {
   resultBox.classList.add('hidden');
   manualResultBox.classList.add('hidden');
   renderCargoBuilder();
+  
+  // Mostrar seção de lançamento se tiver itens
+  if (state.cargoItems.length > 0) {
+    launchSection.style.display = 'block';
+    updateProgress('launch');
+  }
 }
 
 async function onCalculateAutomatic() {
@@ -2308,13 +2861,37 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
   targetBox.innerHTML = `
     <h3>${title}</h3>
     ${rangeLine}
-    <p><strong>Volume total da carga:</strong> ${formatVolume(payload.totalVolumeCm3 || 0)}</p>
+    <p><strong>Volume real da carga:</strong> ${formatVolume(payload.totalVolumeCm3 || 0)}</p>
+    ${payload.totalEffectiveVolumeCm3 && payload.totalEffectiveVolumeCm3 !== payload.totalVolumeCm3 ? 
+      `<p><strong>Volume efetivo (com espaços vazios):</strong> ${formatVolume(payload.totalEffectiveVolumeCm3)}</p>` : ''}
+    ${payload.packingEfficiency && payload.packingEfficiency < 1 ? 
+      `<p><strong>Eficiência de empacotamento:</strong> ${(payload.packingEfficiency * 100).toFixed(1)}%</p>` : ''}
+    ${payload.truckEfficiency ? 
+      `<p><strong>Eficiência do caminhão:</strong> ${(payload.truckEfficiency * 100).toFixed(0)}% (volume útil)</p>` : ''}
     <p><strong>Capacidade total selecionada:</strong> ${formatVolume(allocation.totalCapacityCm3 || 0)}</p>
     <p><strong>Caminhoes usados:</strong></p>
     <ul>${trucksHtml}</ul>
     ${statusLine}
     ${trailing}
     <p><strong>Ocupação:</strong> ${((allocation.occupancyRate || 0) * 100).toFixed(2)}%</p>
+    
+    ${payload.logisticAnalysis ? `
+      <div class="logistic-analysis" style="margin-top: 20px; padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f8f9fa;">
+        <h4 style="margin: 0 0 10px 0; color: var(--brand-black);">📊 Análise Logística Profissional</h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9rem;">
+          <div><strong>Volume útil caminhão:</strong> ${payload.logisticAnalysis.volumeUtilCaminhao.toFixed(2)} m³</div>
+          <div><strong>Taxa de ocupação:</strong> ${payload.logisticAnalysis.taxaOcupacao}%</div>
+          <div><strong>Espaço restante:</strong> ${payload.logisticAnalysis.espacoRestante.toFixed(2)} m³</div>
+          <div><strong>Nível de risco:</strong> <span style="color: ${payload.logisticAnalysis.nivelRisco === 'ALTA' ? '#dc3545' : payload.logisticAnalysis.nivelRisco === 'MÉDIA' ? '#ffc107' : '#28a745'}">${payload.logisticAnalysis.nivelRisco}</span></div>
+        </div>
+        <div style="margin-top: 10px; padding: 10px; background: white; border-radius: 6px; border-left: 4px solid var(--brand-yellow);">
+          <strong style="color: var(--brand-black)">Conclusão:</strong> ${payload.logisticAnalysis.conclusao}
+        </div>
+        <div style="margin-top: 10px; font-size: 0.85rem; color: var(--muted); font-style: italic;">
+          💡 ${payload.logisticAnalysis.recomendacao}
+        </div>
+      </div>
+    ` : ''}
   `;
 }
 
