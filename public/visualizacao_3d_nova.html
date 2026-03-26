@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualização 3D de Carga</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .control-group {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        label {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        select {
+            padding: 12px 16px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            font-size: 16px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        select:hover {
+            border-color: #667eea;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+            transform: translateY(-2px);
+        }
+
+        .visualization {
+            height: 500px;
+            background: #f8f9fa;
+            position: relative;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        .stats {
+            padding: 30px;
+            background: white;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 12px;
+            border-left: 4px solid #667eea;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            color: #6c757d;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #495057;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .info-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            max-width: 300px;
+        }
+
+        .info-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #495057;
+        }
+
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+        }
+
+        .info-label {
+            color: #6c757d;
+        }
+
+        .info-value {
+            font-weight: 600;
+            color: #495057;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚛 Visualização 3D de Carga</h1>
+            <div class="subtitle">Sistema inteligente de empacotamento para caminhões</div>
+        </header>
+
+        <section class="controls">
+            <div class="control-group">
+                <label for="client-select">Selecione o Cliente:</label>
+                <select id="client-select">
+                    <option value="">Escolha um cliente...</option>
+                    <option value="casa-tintas">Casa das Tintas</option>
+                    <option value="alianca-tintas">Aliança Tintas</option>
+                    <option value="t-santos">T Santos</option>
+                    <option value="m-max">M Max</option>
+                    <option value="tecnopartes">Tecnopartes</option>
+                    <option value="alianca">Aliança</option>
+                    <option value="mercadao">Mercadão</option>
+                    <option value="fg-santos">FG Santos</option>
+                    <option value="all">Todos os Clientes</option>
+                </select>
+            </div>
+
+            <div class="button-group">
+                <button class="btn-primary" onclick="renderCargo()">
+                    📦 Renderizar Carga
+                </button>
+                <button class="btn-secondary" onclick="resetView()">
+                    🔄 Resetar Visualização
+                </button>
+            </div>
+        </section>
+
+        <section class="visualization">
+            <div id="canvas-container"></div>
+            <div id="loading" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <div>Processando carga...</div>
+            </div>
+            <div id="info-panel" class="info-panel" style="display: none;">
+                <div class="info-title">📊 Informações da Carga</div>
+                <div id="info-content"></div>
+            </div>
+        </section>
+
+        <section class="stats">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Volume Total</div>
+                    <div class="stat-value" id="volume-total">0 m³</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Itens Carregados</div>
+                    <div class="stat-value" id="items-count">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Ocupação</div>
+                    <div class="stat-value" id="ocupacao">0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Eficiência</div>
+                    <div class="stat-value" id="eficiencia">0%</div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        // Dados reais dos clientes
+        const CLIENT_DATA = {
+            'casa-tintas': {
+                name: 'Casa das Tintas',
+                items: [
+                    { name: 'Container', dimensions: [1.15, 1.16, 1.15], color: 0x88d8b0, quantity: 2 },
+                    { name: 'Balde 25kg', dimensions: [0.32, 0.31, 0.32], color: 0xff6b6b, quantity: 460 },
+                    { name: 'Galão 3.6L', dimensions: [0.20, 0.20, 0.20], color: 0x45b7d1, quantity: 20 }
+                ]
+            },
+            'alianca-tintas': {
+                name: 'Aliança Tintas',
+                items: [
+                    { name: 'Balde 18L', dimensions: [0.32, 0.35, 0.32], color: 0x4ecdc4, quantity: 12 }
+                ]
+            },
+            't-santos': {
+                name: 'T Santos',
+                items: [
+                    { name: 'Balde 18L', dimensions: [0.32, 0.35, 0.32], color: 0x4ecdc4, quantity: 84 },
+                    { name: 'Balde 25kg', dimensions: [0.32, 0.31, 0.32], color: 0xff6b6b, quantity: 120 },
+                    { name: 'Barrica 25kg', dimensions: [0.28, 0.30, 0.28], color: 0xffe66d, quantity: 220 },
+                    { name: 'Galão 3.6L', dimensions: [0.20, 0.20, 0.20], color: 0x45b7d1, quantity: 40 },
+                    { name: 'Galão 3.2L', dimensions: [0.19, 0.22, 0.19], color: 0x96ceb4, quantity: 50 },
+                    { name: 'Tambor 200L', dimensions: [0.58, 0.90, 0.58], color: 0xff6f61, quantity: 1 },
+                    { name: 'Lata 18LT', dimensions: [0.16, 0.18, 0.16], color: 0xa8e6cf, quantity: 29 },
+                    { name: 'Quarto 900ML', dimensions: [0.10, 0.12, 0.10], color: 0xf7dc6f, quantity: 36 },
+                    { name: 'Lata Solvente 5L', dimensions: [0.37, 0.29, 0.22], color: 0xbb8fce, quantity: 16 },
+                    { name: 'Frasco Aerosol', dimensions: [0.06, 0.15, 0.06], color: 0xff6b9d, quantity: 9 },
+                    { name: 'Massa Poliester', dimensions: [0.30, 0.15, 0.20], color: 0xc9b1ff, quantity: 4 },
+                    { name: 'Lata Solvente 900ML', dimensions: [0.11, 0.10, 0.11], color: 0xfad02e, quantity: 5 }
+                ]
+            },
+            'm-max': {
+                name: 'M Max',
+                items: [
+                    { name: 'Galão 3.2L', dimensions: [0.19, 0.22, 0.19], color: 0x96ceb4, quantity: 38 },
+                    { name: 'Lata 18LT', dimensions: [0.16, 0.18, 0.16], color: 0xa8e6cf, quantity: 70 },
+                    { name: 'Quarto 900ML', dimensions: [0.10, 0.12, 0.10], color: 0xf7dc6f, quantity: 14 },
+                    { name: 'Lata Solvente 5L', dimensions: [0.37, 0.29, 0.22], color: 0xbb8fce, quantity: 20 },
+                    { name: 'Frasco Aerosol', dimensions: [0.06, 0.15, 0.06], color: 0xff6b9d, quantity: 12 },
+                    { name: 'Lata Solvente 900ML', dimensions: [0.11, 0.10, 0.11], color: 0xfad02e, quantity: 20 }
+                ]
+            },
+            'tecnopartes': {
+                name: 'Tecnopartes',
+                items: [
+                    { name: 'Galão 3.2L', dimensions: [0.19, 0.22, 0.19], color: 0x96ceb4, quantity: 34 },
+                    { name: 'Lata 18LT', dimensions: [0.16, 0.18, 0.16], color: 0xa8e6cf, quantity: 7 },
+                    { name: 'Quarto 900ML', dimensions: [0.10, 0.12, 0.10], color: 0xf7dc6f, quantity: 13 },
+                    { name: 'Lata Solvente 5L', dimensions: [0.37, 0.29, 0.22], color: 0xbb8fce, quantity: 10 },
+                    { name: 'Lata Solvente 900ML', dimensions: [0.11, 0.10, 0.11], color: 0xfad02e, quantity: 6 },
+                    { name: 'Balde Plástico 18LT', dimensions: [0.32, 0.35, 0.32], color: 0x6c5ce7, quantity: 5 }
+                ]
+            },
+            'alianca': {
+                name: 'Aliança',
+                items: [
+                    { name: 'Galão 3.2L', dimensions: [0.19, 0.22, 0.19], color: 0x96ceb4, quantity: 10 },
+                    { name: 'Tambor 200L', dimensions: [0.58, 0.90, 0.58], color: 0xff6f61, quantity: 9 },
+                    { name: 'Lata 18LT', dimensions: [0.16, 0.18, 0.16], color: 0xa8e6cf, quantity: 95 },
+                    { name: 'Lata Solvente 5L', dimensions: [0.37, 0.29, 0.22], color: 0xbb8fce, quantity: 5 }
+                ]
+            },
+            'mercadao': {
+                name: 'Mercadão',
+                items: [
+                    { name: 'Galão 3.2L', dimensions: [0.19, 0.22, 0.19], color: 0x96ceb4, quantity: 31 },
+                    { name: 'Lata 18LT', dimensions: [0.16, 0.18, 0.16], color: 0xa8e6cf, quantity: 20 },
+                    { name: 'Quarto 900ML', dimensions: [0.10, 0.12, 0.10], color: 0xf7dc6f, quantity: 19 },
+                    { name: 'Lata Solvente 5L', dimensions: [0.37, 0.29, 0.22], color: 0xbb8fce, quantity: 7 },
+                    { name: 'Frasco Aerosol', dimensions: [0.06, 0.15, 0.06], color: 0xff6b9d, quantity: 3 },
+                    { name: 'Lata Solvente 900ML', dimensions: [0.11, 0.10, 0.11], color: 0xfad02e, quantity: 19 }
+                ]
+            },
+            'fg-santos': {
+                name: 'FG Santos',
+                items: [
+                    { name: 'Galão 3.2L', dimensions: [0.19, 0.22, 0.19], color: 0x96ceb4, quantity: 4 }
+                ]
+            }
+        };
+
+        // Variáveis globais
+        let scene, camera, renderer, controls;
+        let truck, cargoGroup;
+        let isLoading = false;
+
+        // Dimensões do caminhão
+        const TRUCK_DIMENSIONS = {
+            length: 14.5,
+            width: 2.45,
+            height: 1.70
+        };
+
+        // Inicialização
+        function init() {
+            const container = document.getElementById('canvas-container');
+            
+            // Cena
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            scene.fog = new THREE.Fog(0xf0f0f0, 50, 200);
+
+            // Câmera
+            camera = new THREE.PerspectiveCamera(
+                60, 
+                container.clientWidth / container.clientHeight, 
+                0.1, 
+                1000
+            );
+            camera.position.set(15, 10, 15);
+            camera.lookAt(0, 0, 0);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true,
+                alpha: false
+            });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2;
+            
+            container.appendChild(renderer.domElement);
+
+            // Iluminação
+            setupLighting();
+
+            // Controles
+            setupControls();
+
+            // Criar caminhão
+            createTruck();
+
+            // Iniciar animação
+            animate();
+
+            // Event listeners
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function setupLighting() {
+            // Luz ambiente
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            // Luz principal
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(20, 30, 20);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 100;
+            directionalLight.shadow.camera.left = -20;
+            directionalLight.shadow.camera.right = 20;
+            directionalLight.shadow.camera.top = 20;
+            directionalLight.shadow.camera.bottom = -20;
+            scene.add(directionalLight);
+
+            // Luz de preenchimento
+            const fillLight = new THREE.DirectionalLight(0x87ceeb, 0.3);
+            fillLight.position.set(-10, 15, -10);
+            scene.add(fillLight);
+
+            // Luz de contorno
+            const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
+            rimLight.position.set(0, 10, -20);
+            scene.add(rimLight);
+        }
+
+        function setupControls() {
+            // Controles simples (sem OrbitControls para evitar dependências)
+            let mouseX = 0, mouseY = 0;
+            let targetX = 0, targetY = 0;
+
+            document.addEventListener('mousemove', (event) => {
+                mouseX = (event.clientX / window.innerWidth) * 2 - 1;
+                mouseY = -(event.clientY / window.innerHeight) * 2 + 1;
+            });
+
+            function updateCamera() {
+                targetX += (mouseX - targetX) * 0.05;
+                targetY += (mouseY - targetY) * 0.05;
+
+                const radius = 20;
+                camera.position.x = Math.sin(targetX * Math.PI) * radius;
+                camera.position.z = Math.cos(targetX * Math.PI) * radius;
+                camera.position.y = 10 + targetY * 5;
+                camera.lookAt(0, 0, 0);
+            }
+
+            // Adicionar ao loop de animação
+            scene.userData.updateCamera = updateCamera;
+        }
+
+        function createTruck() {
+            const { length, width, height } = TRUCK_DIMENSIONS;
+            
+            // Grupo do caminhão
+            truck = new THREE.Group();
+
+            // Chão do caminhão
+            const floorGeometry = new THREE.BoxGeometry(length, 0.2, width);
+            const floorMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x8b4513,
+                roughness: 0.8,
+                metalness: 0.2
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.position.y = 0;
+            floor.receiveShadow = true;
+            floor.castShadow = true;
+            truck.add(floor);
+
+            // Paredes (wireframe para visualização)
+            const wallMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x666666, 
+                wireframe: true,
+                transparent: true,
+                opacity: 0.3
+            });
+
+            // Paredes laterais
+            const wallGeometry = new THREE.BoxGeometry(0.1, height, width);
+            const leftWall = new THREE.Mesh(wallGeometry, wallMaterial);
+            leftWall.position.set(-length/2, height/2, 0);
+            truck.add(leftWall);
+
+            const rightWall = new THREE.Mesh(wallGeometry, wallMaterial);
+            rightWall.position.set(length/2, height/2, 0);
+            truck.add(rightWall);
+
+            // Paredes frontais
+            const frontWallGeometry = new THREE.BoxGeometry(length, height, 0.1);
+            const frontWall = new THREE.Mesh(frontWallGeometry, wallMaterial);
+            frontWall.position.set(0, height/2, -width/2);
+            truck.add(frontWall);
+
+            const backWall = new THREE.Mesh(frontWallGeometry, wallMaterial);
+            backWall.position.set(0, height/2, width/2);
+            truck.add(backWall);
+
+            scene.add(truck);
+
+            // Chão do ambiente
+            const groundGeometry = new THREE.PlaneGeometry(50, 50);
+            const groundMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0xe0e0e0,
+                roughness: 0.8,
+                metalness: 0.1
+            });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -0.5;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // Grade de referência
+            const gridHelper = new THREE.GridHelper(50, 50, 0xcccccc, 0xeeeeee);
+            scene.add(gridHelper);
+        }
+
+        function createCargo(clientKey) {
+            // Limpar carga anterior
+            if (cargoGroup) {
+                scene.remove(cargoGroup);
+            }
+
+            cargoGroup = new THREE.Group();
+
+            const clientData = CLIENT_DATA[clientKey];
+            if (!clientData) return;
+
+            // Coletar todos os itens
+            const allItems = [];
+            
+            if (clientKey === 'all') {
+                // Todos os clientes - manter ordem
+                const clientOrder = Object.keys(CLIENT_DATA);
+                clientOrder.forEach(key => {
+                    if (key !== 'all') {
+                        const data = CLIENT_DATA[key];
+                        console.log(`Processando cliente: ${data.name}`);
+                        data.items.forEach(item => {
+                            console.log(`  Item: ${item.name} - Quantidade: ${item.quantity}`);
+                            for (let i = 0; i < item.quantity; i++) {
+                                allItems.push({
+                                    ...item,
+                                    clientName: data.name,
+                                    clientKey: key
+                                });
+                            }
+                        });
+                    }
+                });
+            } else {
+                // Cliente específico
+                console.log(`Processando cliente específico: ${clientData.name}`);
+                clientData.items.forEach(item => {
+                    console.log(`  Item: ${item.name} - Quantidade: ${item.quantity}`);
+                    for (let i = 0; i < item.quantity; i++) {
+                        allItems.push({
+                            ...item,
+                            clientName: clientData.name,
+                            clientKey: clientKey
+                        });
+                    }
+                });
+            }
+            
+            console.log(`Total de itens a processar: ${allItems.length}`);
+
+            // Sistema de empacotamento - empilhamento vertical simples
+            const { length, width, height } = TRUCK_DIMENSIONS;
+            
+            // Array para rastrear itens já posicionados (para colisão)
+            const placedItems = [];
+            
+            function checkCollision3D(x, y, z, itemWidth, itemHeight, itemDepth) {
+                // Verificar colisão com todos os itens já posicionados
+                for (const item of placedItems) {
+                    const halfWidth1 = itemWidth / 2;
+                    const halfHeight1 = itemHeight / 2;
+                    const halfDepth1 = itemDepth / 2;
+                    
+                    const halfWidth2 = item.width / 2;
+                    const halfHeight2 = item.height / 2;
+                    const halfDepth2 = item.depth / 2;
+                    
+                    // Verificar sobreposição em todos os eixos
+                    const overlapX = Math.abs(x - item.x) < (halfWidth1 + halfWidth2);
+                    const overlapY = Math.abs(y - item.y) < (halfHeight1 + halfHeight2);
+                    const overlapZ = Math.abs(z - item.z) < (halfDepth1 + halfDepth2);
+                    
+                    if (overlapX && overlapY && overlapZ) {
+                        return true; // Houve colisão
+                    }
+                }
+                return false; // Sem colisão
+            }
+
+            function findBestPosition(itemWidth, itemHeight, itemDepth) {
+                const { length, width, height } = TRUCK_DIMENSIONS;
+                const GAP = 0.01;
+                const FLOOR_Y = 0.1;
+
+                function insideTruckXZ(x, z) {
+                    const minX = -length / 2 + itemWidth / 2 + GAP;
+                    const maxX = length / 2 - itemWidth / 2 - GAP;
+                    const minZ = -width / 2 + itemDepth / 2 + GAP;
+                    const maxZ = width / 2 - itemDepth / 2 - GAP;
+                    return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+                }
+
+                function getSupportTopY(x, z) {
+                    // Altura de apoio = topo mais alto de qualquer item cujo "pé" (XZ) sobreponha o novo item.
+                    let supportTop = FLOOR_Y;
+                    for (const it of placedItems) {
+                        const overlapX = Math.abs(x - it.x) < (itemWidth / 2 + it.width / 2 - 1e-9);
+                        const overlapZ = Math.abs(z - it.z) < (itemDepth / 2 + it.depth / 2 - 1e-9);
+                        if (overlapX && overlapZ) {
+                            const top = it.y + it.height / 2;
+                            if (top > supportTop) supportTop = top;
+                        }
+                    }
+                    return supportTop;
+                }
+
+                // Candidatos de posição para encostar fileiras (pelo fundo/esquerda e pelas bordas dos itens já colocados).
+                const xCandidates = new Set([
+                    -length / 2 + itemWidth / 2 + GAP
+                ]);
+                const zCandidates = new Set([
+                    -width / 2 + itemDepth / 2 + GAP
+                ]);
+
+                for (const it of placedItems) {
+                    xCandidates.add(it.x + it.width / 2 + itemWidth / 2 + GAP);
+                    zCandidates.add(it.z + it.depth / 2 + itemDepth / 2 + GAP);
+                }
+
+                const xs = Array.from(xCandidates).sort((a, b) => a - b);
+                const zs = Array.from(zCandidates).sort((a, b) => a - b);
+
+                // Ordem: fundo -> frente (X crescente), esquerda -> direita (Z crescente)
+                for (const x of xs) {
+                    for (const z of zs) {
+                        if (!insideTruckXZ(x, z)) continue;
+
+                        const supportTop = getSupportTopY(x, z);
+                        const y = supportTop + itemHeight / 2;
+
+                        if (y + itemHeight / 2 > height - FLOOR_Y) continue;
+                        if (checkCollision3D(x, y, z, itemWidth, itemHeight, itemDepth)) continue;
+
+                        placedItems.push({
+                            x,
+                            y,
+                            z,
+                            width: itemWidth,
+                            height: itemHeight,
+                            depth: itemDepth
+                        });
+
+                        console.log(`✅ Posicionando em X=${x.toFixed(2)}, Y=${y.toFixed(3)}, Z=${z.toFixed(2)}m`);
+
+                        return {
+                            x,
+                            y,
+                            z,
+                            layer: supportTop === FLOOR_Y ? 'fundo_chao' : 'fundo_empilhado'
+                        };
+                    }
+                }
+
+                console.log(`❌ Não encontrou nenhuma posição que caiba!`);
+                return null;
+            }
+
+            let placedCount = 0;
+            let totalVolume = 0;
+            const layerStats = { fundo_chao: 0, meio_chao: 0, fundo_empilhado: 0, meio_empilhado: 0 };
+
+            // Empacotar itens - ordenar por tamanho para melhor aproveitamento
+            allItems.sort((a, b) => {
+                const volumeA = a.dimensions[0] * a.dimensions[1] * a.dimensions[2];
+                const volumeB = b.dimensions[0] * b.dimensions[1] * b.dimensions[2];
+                return volumeB - volumeA;  // Maiores primeiro
+            });
+
+            console.log(`Empacotando ${allItems.length} itens - modo carga real (fundo → cima)...`);
+
+            // Empacotar itens
+            allItems.forEach((item, index) => {
+                const [itemWidth, itemHeight, itemDepth] = item.dimensions;
+                
+                // Encontrar posição com lógica de carga real
+                const position = findBestPosition(itemWidth, itemHeight, itemDepth);
+                
+                if (position) {
+                    // Criar item
+                    const geometry = new THREE.BoxGeometry(itemWidth, itemHeight, itemDepth);
+                    const material = new THREE.MeshStandardMaterial({
+                        color: item.color,
+                        roughness: 0.4,
+                        metalness: 0.1,
+                        transparent: false,
+                        opacity: 0.95
+                    });
+                    
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.position.set(position.x, position.y, position.z);
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+                    mesh.userData = {
+                        name: item.name,
+                        clientName: item.clientName,
+                        dimensions: item.dimensions,
+                        layer: position.layer
+                    };
+                    
+                    // Adicionar bordas
+                    const edgesGeometry = new THREE.EdgesGeometry(geometry);
+                    const edgesMaterial = new THREE.LineBasicMaterial({ 
+                        color: 0x000000, 
+                        linewidth: 1,
+                        transparent: true,
+                        opacity: 0.3
+                    });
+                    const edges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+                    mesh.add(edges);
+                    
+                    cargoGroup.add(mesh);
+                    placedCount++;
+                    totalVolume += itemWidth * itemHeight * itemDepth;
+                    layerStats[position.layer]++;
+                    
+                    let layerDesc = '';
+                    if (position.layer === 'fundo_chao') layerDesc = 'FUNDO - CHÃO';
+                    else if (position.layer === 'meio_chao') layerDesc = 'MEIO - CHÃO';
+                    else if (position.layer === 'fundo_empilhado') layerDesc = 'FUNDO - EMPILHADO';
+                    else if (position.layer === 'meio_empilhado') layerDesc = 'MEIO - EMPILHADO';
+                    
+                    console.log(`${item.name}: ${layerDesc} - posição (${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) - Cliente: ${item.clientName}`);
+                } else {
+                    console.warn(`Não foi possível posicionar: ${item.name} (${item.clientName})`);
+                }
+            });
+
+            console.log(`Estatísticas: Fundo-chão: ${layerStats.fundo_chao}, Meio-chão: ${layerStats.meio_chao}, Fundo-empilhado: ${layerStats.fundo_empilhado}, Meio-empilhado: ${layerStats.meio_empilhado}`);
+
+            scene.add(cargoGroup);
+
+            // Atualizar estatísticas
+            updateStats(placedCount, totalVolume);
+            
+            // Mostrar painel de informações
+            showInfoPanel(clientData, placedCount, allItems.length);
+        }
+
+        function updateStats(placedCount, totalVolume) {
+            const truckVolume = TRUCK_DIMENSIONS.length * TRUCK_DIMENSIONS.width * TRUCK_DIMENSIONS.height;
+            const ocupacao = (totalVolume / truckVolume) * 100;
+            
+            document.getElementById('volume-total').textContent = totalVolume.toFixed(2) + ' m³';
+            document.getElementById('items-count').textContent = placedCount;
+            document.getElementById('ocupacao').textContent = ocupacao.toFixed(1) + '%';
+            document.getElementById('eficiencia').textContent = (ocupacao > 85 ? 'Excelente' : ocupacao > 70 ? 'Boa' : 'Regular');
+        }
+
+        function showInfoPanel(clientData, placedCount, totalItems) {
+            const infoPanel = document.getElementById('info-panel');
+            const infoContent = document.getElementById('info-content');
+            
+            let html = `
+                <div class="info-item">
+                    <span class="info-label">Cliente:</span>
+                    <span class="info-value">${clientData.name}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Itens:</span>
+                    <span class="info-value">${placedCount}/${totalItems}</span>
+                </div>
+            `;
+            
+            // Adicionar resumo por tipo de item
+            const itemSummary = {};
+            if (clientData.items) {
+                clientData.items.forEach(item => {
+                    itemSummary[item.name] = item.quantity;
+                });
+            }
+            
+            Object.entries(itemSummary).forEach(([name, quantity]) => {
+                html += `
+                    <div class="info-item">
+                        <span class="info-label">${name}:</span>
+                        <span class="info-value">${quantity}</span>
+                    </div>
+                `;
+            });
+            
+            infoContent.innerHTML = html;
+            infoPanel.style.display = 'block';
+        }
+
+        function renderCargo() {
+            const clientSelect = document.getElementById('client-select');
+            const selectedClient = clientSelect.value;
+            
+            if (!selectedClient) {
+                alert('Por favor, selecione um cliente.');
+                return;
+            }
+
+            showLoading(true);
+            
+            // Simular processamento
+            setTimeout(() => {
+                createCargo(selectedClient);
+                showLoading(false);
+            }, 1000);
+        }
+
+        function resetView() {
+            camera.position.set(15, 10, 15);
+            camera.lookAt(0, 0, 0);
+            
+            if (cargoGroup) {
+                scene.remove(cargoGroup);
+                cargoGroup = null;
+            }
+            
+            // Resetar estatísticas
+            document.getElementById('volume-total').textContent = '0 m³';
+            document.getElementById('items-count').textContent = '0';
+            document.getElementById('ocupacao').textContent = '0%';
+            document.getElementById('eficiencia').textContent = '0%';
+            
+            // Esconder painel de informações
+            document.getElementById('info-panel').style.display = 'none';
+        }
+
+        function showLoading(show) {
+            isLoading = show;
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        function onWindowResize() {
+            const container = document.getElementById('canvas-container');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Atualizar câmera se houver controles
+            if (scene.userData.updateCamera) {
+                scene.userData.updateCamera();
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        // Inicializar quando a página carregar
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste Visualização 3D - Cargas Reais</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+        }
+
+        header h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #4ade80;
+        }
+
+        header p {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+
+        main {
+            flex: 1;
+            display: flex;
+            padding: 20px;
+            gap: 20px;
+        }
+
+        .visualization-container {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.85);
+            border-radius: 15px;
+            padding: 20px;
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .visualization-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .visualization-header h2 {
+            color: #4ade80;
+            font-size: 18px;
+            margin: 0;
+        }
+
+        .client-selector {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .client-selector select {
+            padding: 8px 12px;
+            border-radius: 5px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .client-selector select option {
+            background: #333;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #4ade80;
+            color: #333;
+            font-weight: bold;
+        }
+
+        .btn-primary:hover {
+            background: #22c55e;
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        #visualization-3d {
+            height: 400px;
+            border-radius: 0 0 var(--radius-md) var(--radius-md);
+            overflow: hidden;
+            position: relative;
+            width: 100%;
+            max-width: 100%;
+            background: #f0f0f0;
+            margin-bottom: 15px;
+        }
+
+        .visualization-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 12px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .stat-value {
+            font-size: 16px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .info-panel {
+            width: 350px;
+            background: rgba(0, 0, 0, 0.85);
+            border-radius: 15px;
+            padding: 20px;
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .info-panel h3 {
+            color: #4ade80;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .client-info {
+            margin-bottom: 20px;
+        }
+
+        .client-info h4 {
+            font-size: 14px;
+            margin-bottom: 10px;
+            color: #fff;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            padding-bottom: 5px;
+        }
+
+        .item-list {
+            list-style: none;
+            font-size: 12px;
+        }
+
+        .item-list li {
+            padding: 5px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .item-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            margin-right: 8px;
+            display: inline-block;
+        }
+
+        .block-info {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px;
+            border-radius: 5px;
+            margin-top: 5px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .logistics-info {
+            background: rgba(74, 222, 128, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+
+        .logistics-info h4 {
+            color: #4ade80;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .logistics-info p {
+            font-size: 12px;
+            margin: 5px 0;
+        }
+
+        .risk-low {
+            color: #4ade80;
+            font-weight: bold;
+        }
+
+        .risk-medium {
+            color: #fbbf24;
+            font-weight: bold;
+        }
+
+        .risk-high {
+            color: #f87171;
+            font-weight: bold;
+        }
+
+        @media (max-width: 768px) {
+            main {
+                flex-direction: column;
+            }
+            
+            .info-panel {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🚛 Teste Visualização 3D - Cargas Reais</h1>
+        <p>Visualização estática com blocos otimizados para cargas reais dos clientes</p>
+    </header>
+
+    <main>
+        <section class="visualization-container">
+            <div class="visualization-header">
+                <h2>🎨 Visualização 3D da Carga</h2>
+                <div class="client-selector">
+                    <select id="client-select">
+                        <option value="">Selecione um cliente...</option>
+                        <option value="casa-tintas">Casa das Tintas</option>
+                        <option value="alianca-tintas">Aliança Tintas</option>
+                        <option value="t-santos">T Santos</option>
+                        <option value="m-max">M Max</option>
+                        <option value="tecnopartes">Tecnopartes</option>
+                        <option value="alianca">Aliança</option>
+                        <option value="mercadao">Mercadão</option>
+                        <option value="fg-santos">FG Santos</option>
+                        <option value="all">Todas as Cargas</option>
+                    </select>
+                    <button id="render-btn" class="btn btn-primary">Renderizar</button>
+                    <button id="reset-btn" class="btn btn-secondary">🔄 Resetar</button>
+                </div>
+            </div>
+            
+            <div id="visualization-3d"></div>
+            
+            <div class="visualization-stats">
+                <div class="stat-item">
+                    <span class="stat-label">Volume Total:</span>
+                    <span class="stat-value" id="volume-total">0.000 m³</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Volume Real:</span>
+                    <span class="stat-value" id="volume-real">0.000 m³</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Eficiência:</span>
+                    <span class="stat-value" id="eficiencia">0.0%</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Ocupação:</span>
+                    <span class="stat-value" id="ocupacao">0.0%</span>
+                </div>
+            </div>
+        </section>
+
+        <aside class="info-panel">
+            <h3>📊 Informações da Carga</h3>
+            
+            <div class="client-info">
+                <h4 id="client-name">Selecione um cliente</h4>
+                <ul id="item-list" class="item-list"></ul>
+            </div>
+            
+            <div class="block-info" id="block-info">
+                <strong>Blocos Renderizados:</strong> <span id="total-blocks">0</span>
+            </div>
+            
+            <div class="logistics-info">
+                <h4>🚛 Análise Logística</h4>
+                <p><strong>Risco:</strong> <span id="risk-level" class="risk-low">-</span></p>
+                <p><strong>Caminhões:</strong> <span id="trucks-needed">-</span></p>
+                <p><strong>Capacidade:</strong> 60.39 m³</p>
+                <p><strong>Utilizável:</strong> 51.33 m³ (85%)</p>
+            </div>
+        </aside>
+    </main>
+
+    <script>
+        // Materiais PBR realistas para cada tipo de embalagem (nomes reais do banco)
+        const PACKAGE_MATERIALS = {
+            'Balde 25kg': {
+                color: 0xff6b6b,
+                roughness: 0.4,
+                metalness: 0.1,
+                envMapIntensity: 0.6
+            },
+            'Balde 18L': {
+                color: 0x4ecdc4,
+                roughness: 0.3,
+                metalness: 0.2,
+                envMapIntensity: 0.7
+            },
+            'Galão 3.6L': {
+                color: 0x45b7d1,
+                roughness: 0.5,
+                metalness: 0.0,
+                envMapIntensity: 0.5
+            },
+            'Galão 3.2L': {
+                color: 0x96ceb4,
+                roughness: 0.5,
+                metalness: 0.0,
+                envMapIntensity: 0.5
+            },
+            'Lata 18LT': {
+                color: 0xa8e6cf,
+                roughness: 0.6,
+                metalness: 0.3,
+                envMapIntensity: 0.6
+            },
+            'Barrica 25kg': {
+                color: 0xffe66d,
+                roughness: 0.7,
+                metalness: 0.0,
+                envMapIntensity: 0.4
+            },
+            'Tambor Solvente 200L': {
+                color: 0xff6f61,
+                roughness: 0.3,
+                metalness: 0.7,
+                envMapIntensity: 0.8
+            },
+            'Container 1.15x1.16m': {
+                color: 0x88d8b0,
+                roughness: 0.2,
+                metalness: 0.8,
+                envMapIntensity: 0.9
+            },
+            'Quarto 900ML': {
+                color: 0xf7dc6f,
+                roughness: 0.8,
+                metalness: 0.0,
+                envMapIntensity: 0.3
+            },
+            'Frasco Aerosol 225ML': {
+                color: 0xff6b9d,
+                roughness: 0.1,
+                metalness: 0.9,
+                envMapIntensity: 1.0
+            },
+            'Massa Poliester': {
+                color: 0xc9b1ff,
+                roughness: 0.9,
+                metalness: 0.0,
+                envMapIntensity: 0.3
+            },
+            'Lata Solvente 900ML': {
+                color: 0xfad02e,
+                roughness: 0.4,
+                metalness: 0.5,
+                envMapIntensity: 0.7
+            },
+            'Lata Solvente 5L': {
+                color: 0xbb8fce,
+                roughness: 0.5,
+                metalness: 0.2,
+                envMapIntensity: 0.6
+            },
+            'Balde Plástico 18LT': {
+                color: 0x6c5ce7,
+                roughness: 0.6,
+                metalness: 0.0,
+                envMapIntensity: 0.4
+            }
+        };
+
+        // Cargas reais dos clientes (nomes corrigidos)
+        const CLIENT_CARGOS = {
+            'casa-tintas': {
+                name: 'Casa das Tintas',
+                items: [
+                    { name: 'Balde 25kg', quantity: 460 },
+                    { name: 'Galão 3.6L', quantity: 20 },
+                    { name: 'Container 1.15x1.16m', quantity: 2 }
+                ]
+            },
+            'alianca-tintas': {
+                name: 'Aliança Tintas',
+                items: [
+                    { name: 'Balde 18L', quantity: 12 }
+                ]
+            },
+            't-santos': {
+                name: 'T Santos',
+                items: [
+                    { name: 'Balde 18L', quantity: 84 },
+                    { name: 'Balde 25kg', quantity: 120 },
+                    { name: 'Barrica 25kg', quantity: 220 },
+                    { name: 'Galão 3.6L', quantity: 40 },
+                    { name: 'Galão 3.2L', quantity: 50 },
+                    { name: 'Tambor Solvente 200L', quantity: 1 },
+                    { name: 'Lata 18LT', quantity: 29 },
+                    { name: 'Quarto 900ML', quantity: 36 },
+                    { name: 'Lata Solvente 5L', quantity: 16 },
+                    { name: 'Frasco Aerosol 225ML', quantity: 9 },
+                    { name: 'Massa Poliester', quantity: 4 },
+                    { name: 'Lata Solvente 900ML', quantity: 5 }
+                ]
+            },
+            'm-max': {
+                name: 'M Max',
+                items: [
+                    { name: 'Galão 3.2L', quantity: 38 },
+                    { name: 'Lata 18LT', quantity: 70 },
+                    { name: 'Quarto 900ML', quantity: 14 },
+                    { name: 'Lata Solvente 5L', quantity: 20 },
+                    { name: 'Frasco Aerosol 225ML', quantity: 12 },
+                    { name: 'Lata Solvente 900ML', quantity: 20 }
+                ]
+            },
+            'tecnopartes': {
+                name: 'Tecnopartes',
+                items: [
+                    { name: 'Galão 3.2L', quantity: 34 },
+                    { name: 'Lata 18LT', quantity: 7 },
+                    { name: 'Quarto 900ML', quantity: 13 },
+                    { name: 'Lata Solvente 5L', quantity: 10 },
+                    { name: 'Lata Solvente 900ML', quantity: 6 },
+                    { name: 'Balde Plástico 18LT', quantity: 5 }
+                ]
+            },
+            'alianca': {
+                name: 'Aliança',
+                items: [
+                    { name: 'Galão 3.2L', quantity: 10 },
+                    { name: 'Tambor Solvente 200L', quantity: 9 },
+                    { name: 'Lata 18LT', quantity: 95 },
+                    { name: 'Lata Solvente 5L', quantity: 5 }
+                ]
+            },
+            'mercadao': {
+                name: 'Mercadão',
+                items: [
+                    { name: 'Galão 3.2L', quantity: 31 },
+                    { name: 'Lata 18LT', quantity: 20 },
+                    { name: 'Quarto 900ML', quantity: 19 },
+                    { name: 'Lata Solvente 5L', quantity: 7 },
+                    { name: 'Frasco Aerosol 225ML', quantity: 3 },
+                    { name: 'Lata Solvente 900ML', quantity: 19 }
+                ]
+            },
+            'fg-santos': {
+                name: 'FG Santos',
+                items: [
+                    { name: 'Galão 3.2L', quantity: 4 }
+                ]
+            },
+            'all': {
+                name: 'Todas as Cargas',
+                items: [
+                    { name: 'Balde 25kg', quantity: 460 },
+                    { name: 'Galão 3.6L', quantity: 20 },
+                    { name: 'Container 1.15x1.16m', quantity: 2 },
+                    { name: 'Balde 18L', quantity: 12 },
+                    { name: 'Balde 18L', quantity: 84 },
+                    { name: 'Balde 25kg', quantity: 120 },
+                    { name: 'Barrica 25kg', quantity: 220 },
+                    { name: 'Galão 3.6L', quantity: 40 },
+                    { name: 'Galão 3.2L', quantity: 50 },
+                    { name: 'Tambor Solvente 200L', quantity: 1 },
+                    { name: 'Lata 18LT', quantity: 29 },
+                    { name: 'Quarto 900ML', quantity: 36 },
+                    { name: 'Lata Solvente 5L', quantity: 16 },
+                    { name: 'Frasco Aerosol 225ML', quantity: 9 },
+                    { name: 'Massa Poliester', quantity: 4 },
+                    { name: 'Lata Solvente 900ML', quantity: 5 },
+                    { name: 'Galão 3.2L', quantity: 38 },
+                    { name: 'Lata 18LT', quantity: 70 },
+                    { name: 'Quarto 900ML', quantity: 14 },
+                    { name: 'Lata Solvente 5L', quantity: 20 },
+                    { name: 'Frasco Aerosol 225ML', quantity: 12 },
+                    { name: 'Lata Solvente 900ML', quantity: 20 },
+                    { name: 'Galão 3.2L', quantity: 34 },
+                    { name: 'Lata 18LT', quantity: 7 },
+                    { name: 'Quarto 900ML', quantity: 13 },
+                    { name: 'Lata Solvente 5L', quantity: 10 },
+                    { name: 'Lata Solvente 900ML', quantity: 6 },
+                    { name: 'Balde Plástico 18LT', quantity: 5 },
+                    { name: 'Galão 3.2L', quantity: 10 },
+                    { name: 'Tambor Solvente 200L', quantity: 9 },
+                    { name: 'Lata 18LT', quantity: 95 },
+                    { name: 'Lata Solvente 5L', quantity: 5 },
+                    { name: 'Galão 3.2L', quantity: 31 },
+                    { name: 'Lata 18LT', quantity: 20 },
+                    { name: 'Quarto 900ML', quantity: 19 },
+                    { name: 'Lata Solvente 5L', quantity: 7 },
+                    { name: 'Frasco Aerosol 225ML', quantity: 3 },
+                    { name: 'Lata Solvente 900ML', quantity: 19 },
+                    { name: 'Galão 3.2L', quantity: 4 }
+                ]
+            }
+        };
+
+        let scene, camera, renderer;
+        let truckMesh, itemsGroup;
+
+        function initVisualization() {
+            const container = document.getElementById('visualization-3d');
+            
+            // Cena com fundo gradiente mais profissional
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf8f9fa);  // fundo branco suave
+            scene.fog = new THREE.Fog(0xf8f9fa, 50, 200);   // névoa sutil para profundidade
+
+            // Câmera muito mais próxima para detalhes nítidos
+            camera = new THREE.PerspectiveCamera(55, container.clientWidth / 400, 0.1, 1000);
+            camera.position.set(12, 8, 12);  // posição muito mais próxima
+            camera.lookAt(0, 0, 0);
+
+            // Renderer com resolução correta e sem corte
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true,
+                alpha: false,
+                powerPreference: "high-performance",
+                precision: "highp"
+            });
+            
+            // Configurar resolução adequada ao container
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);  // reduzir para evitar corte
+            renderer.setPixelRatio(pixelRatio);
+            renderer.setSize(container.clientWidth, 400);  // resolução exata do container
+            
+            // Configurações de qualidade
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.shadowMap.autoUpdate = true;
+            renderer.shadowMap.needsUpdate = true;
+            
+            // Configurações de cor e tone mapping
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.1;
+            
+            // Melhorar qualidade de renderização
+            renderer.sortObjects = true;
+            renderer.setClearColor(0xf8f9fa, 1);
+            
+            // Garantir que o canvas não ultrapasse o container
+            renderer.domElement.style.width = '100%';
+            renderer.domElement.style.height = '400px';
+            renderer.domElement.style.display = 'block';
+            
+            container.appendChild(renderer.domElement);
+
+            // Sistema de iluminação profissional
+            // Luz ambiente suave
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            // Luz principal direcional (sol) com sombras de alta qualidade
+            const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            sunLight.position.set(15, 25, 10);
+            sunLight.castShadow = true;
+            sunLight.shadow.mapSize.width = 4096;  // resolução 4K para sombras nítidas
+            sunLight.shadow.mapSize.height = 4096;
+            sunLight.shadow.camera.near = 0.1;
+            sunLight.shadow.camera.far = 50;
+            sunLight.shadow.camera.left = -15;
+            sunLight.shadow.camera.right = 15;
+            sunLight.shadow.camera.top = 15;
+            sunLight.shadow.camera.bottom = -15;
+            sunLight.shadow.bias = -0.0001;
+            sunLight.shadow.normalBias = 0.02;  // melhorar qualidade das sombras
+            scene.add(sunLight);
+
+            // Luz de preenchimento (fill light)
+            const fillLight = new THREE.DirectionalLight(0x87ceeb, 0.3);
+            fillLight.position.set(-10, 15, -10);
+            scene.add(fillLight);
+
+            // Luz de contorno (rim light)
+            const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
+            rimLight.position.set(0, 10, -20);
+            scene.add(rimLight);
+
+            // Chão com material mais realista e alta qualidade
+            const floorGeometry = new THREE.PlaneGeometry(50, 50, 100, 100);  // mais subdivisões para detalhes
+            const floorMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0xe8e8e8,
+                roughness: 0.8,
+                metalness: 0.1,
+                envMapIntensity: 0.5,
+                flatShading: false  // renderização suave
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.y = -0.5;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Grade de referência de alta qualidade no chão
+            const gridHelper = new THREE.GridHelper(30, 60, 0xcccccc, 0xeeeeee);  // mais linhas
+            gridHelper.position.y = -0.49;
+            scene.add(gridHelper);
+
+            // Caminhão com materiais melhorados
+            createTruck();
+        }
+
+        function createTruck() {
+            const truckLength = 14.5;
+            const truckWidth = 2.45;
+            const truckHeight = 1.70;
+
+            truckMesh = new THREE.Group();
+
+            // Chão do caminhão com material de madeira
+            const floorGeometry = new THREE.BoxGeometry(truckLength, 0.2, truckWidth);
+            const floorMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x8b4513,
+                roughness: 0.7,
+                metalness: 0.1,
+                envMapIntensity: 0.3
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.position.y = 0;
+            floor.receiveShadow = true;
+            floor.castShadow = true;
+            truckMesh.add(floor);
+
+            // Paredes do caminhão com material metálico semi-transparente
+            const wallMaterial = new THREE.MeshPhysicalMaterial({
+                color: 0x4a5568,
+                roughness: 0.3,
+                metalness: 0.6,
+                transparent: true,
+                opacity: 0.15,
+                thickness: 0.1,
+                side: THREE.DoubleSide,
+                envMapIntensity: 0.5
+            });
+
+            // Paredes sólidas com melhor aparência
+            const wallThickness = 0.1;
+            
+            // Parede frontal
+            const frontWall = new THREE.Mesh(
+                new THREE.BoxGeometry(wallThickness, truckHeight, truckWidth),
+                wallMaterial
+            );
+            frontWall.position.set(-truckLength/2 + wallThickness/2, truckHeight/2, 0);
+            frontWall.castShadow = true;
+            frontWall.receiveShadow = true;
+            truckMesh.add(frontWall);
+
+            // Parede traseira
+            const backWall = new THREE.Mesh(
+                new THREE.BoxGeometry(wallThickness, truckHeight, truckWidth),
+                wallMaterial
+            );
+            backWall.position.set(truckLength/2 - wallThickness/2, truckHeight/2, 0);
+            backWall.castShadow = true;
+            backWall.receiveShadow = true;
+            truckMesh.add(backWall);
+
+            // Parede esquerda
+            const leftWall = new THREE.Mesh(
+                new THREE.BoxGeometry(truckLength - wallThickness*2, truckHeight, wallThickness),
+                wallMaterial
+            );
+            leftWall.position.set(0, truckHeight/2, -truckWidth/2 + wallThickness/2);
+            leftWall.castShadow = true;
+            leftWall.receiveShadow = true;
+            truckMesh.add(leftWall);
+
+            // Parede direita
+            const rightWall = new THREE.Mesh(
+                new THREE.BoxGeometry(truckLength - wallThickness*2, truckHeight, wallThickness),
+                wallMaterial
+            );
+            rightWall.position.set(0, truckHeight/2, truckWidth/2 - wallThickness/2);
+            rightWall.castShadow = true;
+            rightWall.receiveShadow = true;
+            truckMesh.add(rightWall);
+
+            // Bordas superiores para melhor visualização
+            const edgeMaterial = new THREE.MeshStandardMaterial({
+                color: 0x2d3748,
+                roughness: 0.4,
+                metalness: 0.8,
+                envMapIntensity: 0.6
+            });
+
+            // Bordas superiores
+            const topEdges = [
+                new THREE.BoxGeometry(truckLength, 0.05, 0.1),  // frente
+                new THREE.BoxGeometry(truckLength, 0.05, 0.1),  // trás
+                new THREE.BoxGeometry(0.1, 0.05, truckWidth),  // esquerda
+                new THREE.BoxGeometry(0.1, 0.05, truckWidth)   // direita
+            ];
+
+            const edgePositions = [
+                { x: 0, y: truckHeight, z: -truckWidth/2 + 0.05 },  // frente
+                { x: 0, y: truckHeight, z: truckWidth/2 - 0.05 },   // trás
+                { x: -truckLength/2 + 0.05, y: truckHeight, z: 0 }, // esquerda
+                { x: truckLength/2 - 0.05, y: truckHeight, z: 0 }    // direita
+            ];
+
+            topEdges.forEach((geometry, index) => {
+                const edge = new THREE.Mesh(geometry, edgeMaterial);
+                edge.position.copy(edgePositions[index]);
+                edge.castShadow = true;
+                edge.receiveShadow = true;
+                truckMesh.add(edge);
+            });
+
+            // Grupo para itens
+            itemsGroup = new THREE.Group();
+            truckMesh.add(itemsGroup);
+
+            scene.add(truckMesh);
+        }
+
+        function renderCargo(clientKey) {
+            if (!clientKey) return;
+
+            const cargo = CLIENT_CARGOS[clientKey];
+            if (!cargo) return;
+
+            // Limpar itens existentes
+            while(itemsGroup.children.length > 0) {
+                itemsGroup.remove(itemsGroup.children[0]);
+            }
+
+            // Agrupar itens iguais
+            const groupedItems = {};
+            cargo.items.forEach(item => {
+                if (!groupedItems[item.name]) {
+                    groupedItems[item.name] = {
+                        totalQuantity: 0,
+                        material: PACKAGE_MATERIALS[item.name] || {
+                            color: 0x95a5a6,
+                            roughness: 0.5,
+                            metalness: 0.0,
+                            envMapIntensity: 0.5
+                        }
+                    };
+                }
+                groupedItems[item.name].totalQuantity += item.quantity;
+            });
+
+            let totalVolume = 0;
+            let totalBlocks = 0;
+
+            // Dimensões do caminhão em unidades de visualização
+            const TRUCK_LENGTH = 14.5;  // comprimento
+            const TRUCK_WIDTH = 2.45;   // largura  
+            const TRUCK_HEIGHT = 1.70;  // altura
+            const MARGIN = 0.05;         // margem de segurança reduzida
+
+            // Sistema de colisão 3D completo em todas as direções
+            const GRID_SIZE = 0.05;  // resolução mais fina para precisão
+            const collisionGrid = new Map(); // Mapa para rastrear posições ocupadas
+
+            // Função para verificar colisão em 3D (todas as direções)
+            function checkCollision3D(x, y, z, width, height, depth) {
+                const minX = Math.floor((x - width/2) / GRID_SIZE);
+                const maxX = Math.floor((x + width/2) / GRID_SIZE);
+                const minZ = Math.floor((z - depth/2) / GRID_SIZE);
+                const maxZ = Math.floor((z + depth/2) / GRID_SIZE);
+                const minY = Math.floor((y - height/2) / GRID_SIZE);
+                const maxY = Math.floor((y + height/2) / GRID_SIZE);
+
+                for (let gx = minX; gx <= maxX; gx++) {
+                    for (let gz = minZ; gz <= maxZ; gz++) {
+                        for (let gy = minY; gy <= maxY; gy++) {
+                            const key = `${gx},${gy},${gz}`;
+                            if (collisionGrid.has(key)) {
+                                return true; // colisão detectada
+                            }
+                        }
+                    }
+                }
+                return false; // sem colisão
+            }
+
+            // Função para marcar posição 3D como ocupada
+            function markPosition3D(x, y, z, width, height, depth) {
+                const minX = Math.floor((x - width/2) / GRID_SIZE);
+                const maxX = Math.floor((x + width/2) / GRID_SIZE);
+                const minZ = Math.floor((z - depth/2) / GRID_SIZE);
+                const maxZ = Math.floor((z + depth/2) / GRID_SIZE);
+                const minY = Math.floor((y - height/2) / GRID_SIZE);
+                const maxY = Math.floor((y + height/2) / GRID_SIZE);
+
+                for (let gx = minX; gx <= maxX; gx++) {
+                    for (let gz = minZ; gz <= maxZ; gz++) {
+                        for (let gy = minY; gy <= maxY; gy++) {
+                            const key = `${gx},${gy},${gz}`;
+                            collisionGrid.set(key, true);
+                        }
+                    }
+                }
+            }
+
+            // Sistema de empilhamento com colisão completa
+            function findValidPosition(itemWidth, itemHeight, itemDepth, itemsPerBlock, itemName) {
+                const positions = [];
+                
+                // Organizar de trás para frente do caminhão
+                // Z vai de -TRUCK_WIDTH/2 (trás) para +TRUCK_WIDTH/2 (frente)
+                for (let attemptZ = 0; attemptZ < 8; attemptZ++) {
+                    // Começar de trás (-1.225) e ir para frente (+1.225)
+                    const testZ = -TRUCK_WIDTH/2 + 0.5 + attemptZ * 0.8;
+                    
+                    // X vai da esquerda para direita
+                    for (let attemptX = 0; attemptX < 8; attemptX++) {
+                        const testX = -TRUCK_LENGTH/2 + 0.5 + attemptX * 1.8;
+                        
+                        // Verificar se está dentro dos limites do caminhão
+                        if (testX + itemWidth/2 > TRUCK_LENGTH/2 - 0.1 || 
+                            testX - itemWidth/2 < -TRUCK_LENGTH/2 + 0.1 ||
+                            testZ + itemDepth/2 > TRUCK_WIDTH/2 - 0.1 || 
+                            testZ - itemDepth/2 < -TRUCK_WIDTH/2 + 0.1) {
+                            continue;
+                        }
+                        
+                        // Tentar empilhar verticalmente nesta posição
+                        let currentY = 0.1;
+                        let maxHeightReached = false;
+                        
+                        while (!maxHeightReached && currentY + itemHeight <= TRUCK_HEIGHT - 0.1) {
+                            const testY = currentY + itemHeight/2;
+                            
+                            // Verificar colisão em todas as direções
+                            if (!checkCollision3D(testX, testY, testZ, itemWidth, itemHeight, itemDepth)) {
+                                positions.push({
+                                    x: testX,
+                                    y: testY,
+                                    z: testZ,
+                                    baseY: currentY,
+                                    priority: (attemptZ * 10) + attemptX  // prioridade: trás para frente
+                                });
+                                break; // posição válida encontrada
+                            }
+                            
+                            currentY += itemHeight + 0.02; // tentar próxima altura
+                            
+                            if (currentY + itemHeight > TRUCK_HEIGHT - 0.1) {
+                                maxHeightReached = true;
+                            }
+                        }
+                    }
+                }
+                
+                // Ordenar por prioridade (trás para frente) e retornar a primeira posição válida
+                positions.sort((a, b) => a.priority - b.priority);
+                return positions.length > 0 ? positions[0] : null;
+            }
+
+            // Empilhamento com colisão completa - organização por cliente
+            // Primeiro, criar lista de todos os itens mantendo ordem do cliente
+            const allItems = [];
+            
+            // Processar clientes na ordem original
+            const clientOrder = ['casa-tintas', 'alianca-tintas', 't-santos', 'm-max', 'tecnopartes', 'alianca', 'mercadao', 'fg-santos'];
+            
+            clientOrder.forEach((clientKey, clientIndex) => {
+                const clientData = CLIENT_CARGOS[clientKey];
+                if (!clientData) return;
+                
+                console.log(`Processando cliente: ${clientData.name} (${clientIndex + 1}/${clientOrder.length})`);
+                
+                clientData.items.forEach((item, itemIndex) => {
+                    // Adicionar cada item individualmente mantendo a ordem
+                    for (let i = 0; i < item.quantity; i++) {
+                        allItems.push({
+                            name: item.name,
+                            clientKey: clientKey,
+                            clientName: clientData.name,
+                            clientOrder: clientIndex,
+                            itemOrder: itemIndex,
+                            globalIndex: allItems.length,
+                            originalOrder: allItems.length  // manter ordem original
+                        });
+                    }
+                });
+            });
+            
+            // Ordenar por cliente primeiro, depois por ordem do item dentro do cliente
+            const sortedItems = allItems.sort((a, b) => {
+                if (a.clientOrder !== b.clientOrder) {
+                    return a.clientOrder - b.clientOrder;  // mesmo cliente junto
+                }
+                return a.originalOrder - b.originalOrder;  // manter ordem original
+            });
+            
+            console.log(`Organizando ${sortedItems.length} itens por cliente e ordem do pedido`);
+            
+            // Mostrar resumo por cliente
+            const clientSummary = {};
+            sortedItems.forEach(item => {
+                if (!clientSummary[item.clientKey]) {
+                    clientSummary[item.clientKey] = {
+                        name: item.clientName,
+                        count: 0,
+                        items: {}
+                    };
+                }
+                clientSummary[item.clientKey].count++;
+                if (!clientSummary[item.clientKey].items[item.name]) {
+                    clientSummary[item.clientKey].items[item.name] = 0;
+                }
+                clientSummary[item.clientKey].items[item.name]++;
+            });
+            
+            Object.entries(clientSummary).forEach(([key, data]) => {
+                console.log(`${data.name}: ${data.count} itens`);
+                Object.entries(data.items).forEach(([itemName, count]) => {
+                    console.log(`  - ${itemName}: ${count}`);
+                });
+            });
+            
+            // Processar itens na ordem correta (por cliente)
+            sortedItems.forEach((itemData, globalIndex) => {
+                const { name, clientKey, clientName, clientOrder, itemOrder } = itemData;
+                
+                // Tamanhos reais das embalagens em metros (baseado no banco de dados)
+                let itemWidth = 1.0;
+                let itemDepth = 1.0;
+                let itemHeight = 1.0;
+                
+                // Usar nomes exatos do banco de dados com dimensões reais
+                if (name === 'Balde 25kg') {
+                    itemWidth = 0.32;  // diameter_cm: 31.83
+                    itemDepth = 0.32;
+                    itemHeight = 0.31;  // height_cm: 31
+                } else if (name === 'Balde 18L') {
+                    itemWidth = 0.32;  // diameter_cm: 31.83
+                    itemDepth = 0.32;
+                    itemHeight = 0.35;  // height_cm: 35
+                } else if (name === 'Galão 3.6L') {
+                    itemWidth = 0.20;  // diameter_cm: 19.73
+                    itemDepth = 0.20;
+                    itemHeight = 0.20;  // height_cm: 20
+                } else if (name === 'Galão 3.2L') {
+                    itemWidth = 0.19;  // diameter_cm: 19
+                    itemDepth = 0.19;
+                    itemHeight = 0.22;  // height_cm: 22
+                } else if (name === 'Lata 18LT') {
+                    itemWidth = 0.16;  // diameter_cm: 16
+                    itemDepth = 0.16;
+                    itemHeight = 0.18;  // height_cm: 18
+                } else if (name === 'Barrica 25kg') {
+                    itemWidth = 0.28;  // diameter_cm: 28.33
+                    itemDepth = 0.28;
+                    itemHeight = 0.30;  // height_cm: 30
+                } else if (name === 'Tambor Solvente 200L') {
+                    itemWidth = 0.58;  // diameter_cm: 58
+                    itemDepth = 0.58;
+                    itemHeight = 0.90;  // height_cm: 90
+                } else if (name === 'Container 1.15x1.16m') {
+                    itemWidth = 1.15;  // length_cm: 115
+                    itemDepth = 1.15;  // width_cm: 115
+                    itemHeight = 1.16;  // height_cm: 116
+                } else if (name === 'Quarto 900ML') {
+                    itemWidth = 0.10;  // diameter_cm: 10
+                    itemDepth = 0.10;
+                    itemHeight = 0.12;  // height_cm: 12
+                } else if (name === 'Frasco Aerosol 225ML') {
+                    itemWidth = 0.06;  // diameter_cm: 6
+                    itemDepth = 0.06;
+                    itemHeight = 0.15;  // height_cm: 15
+                } else if (name === 'Massa Poliester') {
+                    itemWidth = 0.30;  // length_cm: 30
+                    itemDepth = 0.20;  // width_cm: 20
+                    itemHeight = 0.15;  // height_cm: 15
+                } else if (name === 'Lata Solvente 900ML') {
+                    itemWidth = 0.11;  // diameter_cm: 11
+                    itemDepth = 0.11;
+                    itemHeight = 0.10;  // height_cm: 10
+                } else if (name === 'Lata Solvente 5L') {
+                    itemWidth = 0.37;  // length_cm: 37
+                    itemDepth = 0.22;  // width_cm: 22
+                    itemHeight = 0.29;  // height_cm: 29
+                } else if (name === 'Balde Plástico 18LT') {
+                    itemWidth = 0.32;  // diameter_cm: 31.8
+                    itemDepth = 0.32;
+                    itemHeight = 0.35;  // height_cm: 35
+                } else if (name === 'Galão Solvente 5L') {
+                    itemWidth = 0.19;  // diameter_cm: 18.5
+                    itemDepth = 0.19;
+                    itemHeight = 0.28;  // height_cm: 28
+                } else {
+                    console.warn(`Embalagem não reconhecida: ${name}, usando tamanho padrão`);
+                    itemWidth = 0.3;
+                    itemDepth = 0.3;
+                    itemHeight = 0.3;
+                }
+                
+                // Criar bloco individual
+                let blockWidth = itemWidth;
+                let blockDepth = itemDepth;
+                let blockHeight = itemHeight;
+                
+                // Encontrar posição válida com colisão completa
+                const position = findValidPosition(blockWidth, blockHeight, blockDepth, 1, name);
+                
+                if (!position) {
+                    console.warn(`Não foi possível encontrar posição para item ${globalIndex + 1} de ${name} (${clientName})`);
+                    return;
+                }
+                
+                // Obter material do grupo
+                const group = groupedItems[name];
+                if (!group) {
+                    console.warn(`Grupo não encontrado para: ${name}`);
+                    return;
+                }
+                
+                // Criar bloco
+                const geometry = new THREE.BoxGeometry(blockWidth, blockHeight, blockDepth);
+                const material = new THREE.MeshStandardMaterial(group.material);
+                const blockMesh = new THREE.Mesh(geometry, material);
+                
+                // Configurar sombras
+                blockMesh.castShadow = true;
+                blockMesh.receiveShadow = true;
+                
+                // Adicionar bordas
+                const edgesGeometry = new THREE.EdgesGeometry(geometry, 1);
+                const edgesMaterial = new THREE.LineBasicMaterial({ 
+                    color: 0x000000, 
+                    linewidth: 2,
+                    transparent: true,
+                    opacity: 0.3
+                });
+                const edges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+                blockMesh.add(edges);
+                
+                // Posicionar bloco na posição encontrada
+                blockMesh.position.set(position.x, position.y, position.z);
+                
+                console.log(`Item ${globalIndex + 1} de ${name} (${clientName}): posição (${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}), tamanho ${blockWidth.toFixed(2)}x${blockHeight.toFixed(2)}x${blockDepth.toFixed(2)}m, Cliente: ${clientName} (${clientOrder + 1})`);
+                
+                // Marcar posição 3D como ocupada
+                markPosition3D(position.x, position.y, position.z, blockWidth, blockHeight, blockDepth);
+                
+                itemsGroup.add(blockMesh);
+                totalBlocks++;
+                
+                const blockVolume = blockWidth * blockHeight * blockDepth;
+                totalVolume += blockVolume;
+            });
+
+            // Atualizar estatísticas
+            const efficiency = 100;
+            const ocupacao = (totalVolume / (TRUCK_LENGTH * TRUCK_WIDTH * TRUCK_HEIGHT)) * 100;
+
+            document.getElementById('volume-total').textContent = totalVolume.toFixed(3) + ' m³';
+            document.getElementById('volume-real').textContent = totalVolume.toFixed(3) + ' m³';
+            document.getElementById('eficiencia').textContent = efficiency.toFixed(1) + '%';
+            document.getElementById('ocupacao').textContent = ocupacao.toFixed(1) + '%';
+
+            // Atualizar informações do painel
+            updateInfoPanel(cargo, totalBlocks, ocupacao);
+
+            // Renderizar
+            renderer.render(scene, camera);
+        }
+
+        function updateInfoPanel(cargo, totalBlocks, ocupacao) {
+            document.getElementById('client-name').textContent = cargo.name;
+            
+            // Agrupar itens para exibição
+            const groupedItems = {};
+            cargo.items.forEach(item => {
+                if (!groupedItems[item.name]) {
+                    groupedItems[item.name] = 0;
+                }
+                groupedItems[item.name] += item.quantity;
+            });
+
+            const itemList = document.getElementById('item-list');
+            itemList.innerHTML = '';
+
+            Object.entries(groupedItems).forEach(([name, quantity]) => {
+                const li = document.createElement('li');
+                const material = PACKAGE_MATERIALS[name] || { color: 0x95a5a6 };
+                const color = material.color;
+                
+                li.innerHTML = `
+                    <div>
+                        <span class="item-color" style="background: #${color.toString(16).padStart(6, '0')}"></span>
+                        ${name}
+                    </div>
+                    <strong>${quantity}</strong>
+                `;
+                itemList.appendChild(li);
+            });
+
+            document.getElementById('total-blocks').textContent = totalBlocks;
+
+            // Análise logística
+            const riskElement = document.getElementById('risk-level');
+            const trucksElement = document.getElementById('trucks-needed');
+
+            if (ocupacao <= 60) {
+                riskElement.textContent = 'BAIXO';
+                riskElement.className = 'risk-low';
+            } else if (ocupacao <= 80) {
+                riskElement.textContent = 'MÉDIO';
+                riskElement.className = 'risk-medium';
+            } else {
+                riskElement.textContent = 'ALTO';
+                riskElement.className = 'risk-high';
+            }
+
+            const trucksNeeded = Math.ceil(ocupacao / 85);
+            trucksElement.textContent = trucksNeeded;
+        }
+
+        // Event listeners
+        document.getElementById('render-btn').addEventListener('click', () => {
+            const selectedClient = document.getElementById('client-select').value;
+            renderCargo(selectedClient);
+        });
+
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            camera.position.set(12, 8, 12);  // nova posição muito mais próxima
+            camera.lookAt(0, 0, 0);
+            renderer.render(scene, camera);
+        });
+
+        // Inicializar
+        initVisualization();
+    </script>
+</body>
+</html>

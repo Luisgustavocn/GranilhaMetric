@@ -91,7 +91,7 @@ function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       category_id INTEGER,
-      shape TEXT NOT NULL CHECK(shape IN ('square', 'cylinder')),
+      shape TEXT NOT NULL CHECK(shape IN ('square', 'cylinder', 'container')),
       length_cm REAL,
       width_cm REAL,
       depth_cm REAL,
@@ -134,7 +134,7 @@ function initDb() {
       client_name TEXT,
       can_id INTEGER,
       can_name TEXT NOT NULL,
-      can_shape TEXT NOT NULL CHECK(can_shape IN ('square', 'cylinder')),
+      can_shape TEXT NOT NULL CHECK(can_shape IN ('square', 'cylinder', 'container')),
       quantity INTEGER NOT NULL,
       unit_volume_cm3 REAL NOT NULL,
       total_volume_cm3 REAL NOT NULL
@@ -553,6 +553,65 @@ async function handleApi(req, res, url) {
     if (!user) return;
     const body = await readJson(req);
     return calculateLoad(res, body);
+  }
+
+  if (method === 'POST' && url.pathname === '/api/packing-3d') {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    const items = Array.isArray(body?.items) ? body.items : [];
+    const truckDimensions = body?.truckDimensions || {
+      length_cm: 1450,
+      width_cm: 245,
+      height_cm: 170
+    };
+
+    if (!items.length) {
+      return sendJson(res, 400, { error: 'Adicione ao menos um item.' });
+    }
+
+    try {
+      // Converter itens para formato 3D
+      const items3D = items.map(item => {
+        const can = db.prepare('SELECT id, name, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3 FROM cans WHERE id = ?').get(item.canId);
+        if (!can) {
+          throw new Error(`Lata ${item.canId} não encontrada`);
+        }
+
+        return {
+          canId: can.id,
+          canName: can.name,
+          quantity: item.quantity,
+          dimensions: getItem3DDimensions(can)
+        };
+      });
+
+      // Calcular empacotamento 3D
+      const packingResult = calculate3DPacking(items3D, truckDimensions);
+
+      // Calcular estatísticas de geometria
+      const geometryStats = calculatePackingEfficiencyWithGeometry(packingResult.packedItems);
+
+      return sendJson(res, 200, {
+        success: true,
+        truckDimensions,
+        packingResult,
+        geometryStats,
+        items: packingResult.packedItems.map(item => ({
+          canId: item.canId,
+          canName: item.canName,
+          quantity: 1, // Cada item individual
+          dimensions: item.dimensions,
+          position: item.position,
+          orientation: item.orientation,
+          rotated: item.rotated,
+          geometry: item.geometry,
+          color: getItemColor(item.canName)
+        }))
+      });
+    } catch (error) {
+      return sendJson(res, 500, { error: error.message });
+    }
   }
 
   sendJson(res, 404, { error: 'Rota não encontrada.' });
@@ -1917,11 +1976,11 @@ function getTruckEfficiency() {
 }
 
 function calculateLogisticAnalysis(load, truckDimensions = null) {
-  // Usar dimensões reais do caminhão se fornecidas, senão usar padrão
+  // Usar dimensões reais do caminhão se fornecidas, senão usar padrão atualizado
   const truck = truckDimensions || {
-    length_cm: 1450,
-    width_cm: 245,
-    height_cm: 160
+    length_cm: 1450,  // 14.5m comprimento
+    width_cm: 245,    // 2.45m largura  
+    height_cm: 170     // 1.70m altura
   };
   
   const truckCapacity = truck.length_cm * truck.width_cm * truck.height_cm;
@@ -1973,19 +2032,195 @@ function get3DLogisticRecommendation(occupancyRate, riskLevel, load) {
   }
 }
 
-// ===== SISTEMA DE CÁLCULO 3D PRECISO =====
+// ===== SISTEMA DE CÁLCULO 3D PRECISO COM GEOMETRIA REAL =====
+
+function getItemColor(canName) {
+  // Cores hexadecimais para cada tipo de embalagem
+  const colors = {
+    'Balde 25kg': 0xff6b6b,      // Vermelho
+    'Balde 18L': 0x4ecdc4,       // Ciano
+    'Galão 3.6L': 0x45b7d1,      // Azul
+    'Galão 3.2L': 0x96ceb4,      // Azul claro
+    'Barrica 25kg': 0xffe66d,     // Amarelo
+    'Container': 0x88d8b0,       // Verde
+    'Tambor 200L': 0xff6f61,     // Laranja
+    'Lata 18L': 0xa8e6cf,       // Verde claro
+    'Quarto 900ML': 0xf7dc6f,    // Amarelo claro
+    'Lata Solvente 5L': 0xbb8fce, // Azul bebê
+    'Frasco Aerosol 225/180ML': 0xff6b9d,  // Rosa
+    'Massa Poliester': 0xc9b1ff,  // Roxo
+    'Lata Solvente 900ML': 0xfad02e, // Laranja escuro
+    'Balde Plastico 18L': 0x6c5ce7, // Índigo
+    'default': 0x95a5a6           // Cinza
+  };
+  
+  return colors[canName] || colors['default'];
+}
+
+function calculateRealVolume(itemDimensions, quantity = 1) {
+  // Calcular volume REAL considerando geometria específica
+  if (itemDimensions.type === 'cylinder') {
+    // Volume real do cilindro (considerando espaço perdido nos cantos)
+    const radius = itemDimensions.diameter / 2;
+    const realVolume = Math.PI * radius * radius * itemDimensions.height;
+    
+    // Volume da bounding box (para comparar espaço perdido)
+    const boundingBoxVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
+    
+    // Espaço perdido devido à forma cilíndrica
+    const wastedSpace = boundingBoxVolume - realVolume;
+    
+    return {
+      realVolume: realVolume * quantity,
+      boundingBoxVolume: boundingBoxVolume * quantity,
+      wastedSpace: wastedSpace * quantity,
+      efficiency: realVolume / boundingBoxVolume,
+      geometry: 'cylinder'
+    };
+  } else if (itemDimensions.type === 'square' || itemDimensions.type === 'box') {
+    // Formas quadradas/retangulares preenchem 100% do bounding box
+    const realVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
+    
+    return {
+      realVolume: realVolume * quantity,
+      boundingBoxVolume: realVolume * quantity,
+      wastedSpace: 0,
+      efficiency: 1.0,
+      geometry: 'square'
+    };
+  } else if (itemDimensions.type === 'container') {
+    // Containers são formas retangulares
+    const realVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
+    
+    return {
+      realVolume: realVolume * quantity,
+      boundingBoxVolume: realVolume * quantity,
+      wastedSpace: 0,
+      efficiency: 1.0,
+      geometry: 'container'
+    };
+  }
+  
+  // Fallback para formas desconhecidas
+  const fallbackVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
+  return {
+    realVolume: fallbackVolume * quantity,
+    boundingBoxVolume: fallbackVolume * quantity,
+    wastedSpace: 0,
+    efficiency: 1.0,
+    geometry: 'unknown'
+  };
+}
+
+function calculatePackingEfficiencyWithGeometry(items) {
+  let totalRealVolume = 0;
+  let totalBoundingBoxVolume = 0;
+  let totalWastedSpace = 0;
+  
+  const geometryStats = {
+    cylinder: { count: 0, totalVolume: 0, wastedSpace: 0 },
+    square: { count: 0, totalVolume: 0, wastedSpace: 0 },
+    container: { count: 0, totalVolume: 0, wastedSpace: 0 }
+  };
+  
+  for (const item of items) {
+    const volumeData = calculateRealVolume(item.dimensions, item.quantity);
+    
+    totalRealVolume += volumeData.realVolume;
+    totalBoundingBoxVolume += volumeData.boundingBoxVolume;
+    totalWastedSpace += volumeData.wastedSpace;
+    
+    // Acumular estatísticas por geometria
+    if (geometryStats[volumeData.geometry]) {
+      geometryStats[volumeData.geometry].count++;
+      geometryStats[volumeData.geometry].totalVolume += volumeData.realVolume;
+      geometryStats[volumeData.geometry].wastedSpace += volumeData.wastedSpace;
+    }
+  }
+  
+  const overallEfficiency = totalBoundingBoxVolume > 0 ? totalRealVolume / totalBoundingBoxVolume : 1;
+  
+  return {
+    totalRealVolume,
+    totalBoundingBoxVolume,
+    totalWastedSpace,
+    overallEfficiency,
+    geometryStats,
+    wastePercentage: totalBoundingBoxVolume > 0 ? (totalWastedSpace / totalBoundingBoxVolume) * 100 : 0
+  };
+}
+
+function checkIfRotationNeeded(itemDimensions, availableSpace) {
+  // Verificar se item cabe na posição vertical (em pé)
+  if (itemDimensions.height <= availableSpace.height &&
+      itemDimensions.length <= availableSpace.length &&
+      itemDimensions.width <= availableSpace.width) {
+    return false; // Não precisa rotacionar
+  }
+  
+  // Tentar rotações horizontais (deitado)
+  const rotations = [
+    { length: itemDimensions.length, width: itemDimensions.height, height: itemDimensions.width },
+    { length: itemDimensions.width, width: itemDimensions.length, height: itemDimensions.height },
+    { length: itemDimensions.height, width: itemDimensions.width, height: itemDimensions.length }
+  ];
+  
+  for (const rotation of rotations) {
+    if (rotation.height <= availableSpace.height &&
+        rotation.length <= availableSpace.length &&
+        rotation.width <= availableSpace.width) {
+      return true; // Precisa rotacionar para caber
+    }
+  }
+  
+  return false; // Não cabe em nenhuma orientação
+}
+
+function getItemRotatedDimensions(itemDimensions, availableSpace) {
+  // Manter vertical por padrão
+  if (itemDimensions.height <= availableSpace.height &&
+      itemDimensions.length <= availableSpace.length &&
+      itemDimensions.width <= availableSpace.width) {
+    return { ...itemDimensions, rotated: false };
+  }
+  
+  // Tentar rotações horizontais se necessário
+  const rotations = [
+    { length: itemDimensions.length, width: itemDimensions.height, height: itemDimensions.width },
+    { length: itemDimensions.width, width: itemDimensions.length, height: itemDimensions.height },
+    { length: itemDimensions.height, width: itemDimensions.width, height: itemDimensions.length }
+  ];
+  
+  for (let i = 0; i < rotations.length; i++) {
+    const rotation = rotations[i];
+    if (rotation.height <= availableSpace.height &&
+        rotation.length <= availableSpace.length &&
+        rotation.width <= availableSpace.width) {
+      return {
+        ...rotation,
+        type: itemDimensions.type,
+        diameter: itemDimensions.diameter,
+        orientation: 'horizontal',
+        rotated: true,
+        rotationIndex: i
+      };
+    }
+  }
+  
+  return itemDimensions; // Retorna original se não couber
+}
 
 function calculate3DPacking(items, truckDimensions) {
   const { length_cm: truckLength, width_cm: truckWidth, height_cm: truckHeight } = truckDimensions;
   
-  // Converter itens para formato 3D padronizado
+  // Converter itens para formato 3D padronizado com orientação vertical
   const items3D = items.map(item => ({
     ...item,
     dimensions: getItem3DDimensions(item),
     quantity: item.quantity
   }));
   
-  // Tentar diferentes estratégias de empacotamento
+  // Tentar diferentes estratégias de empacotamento com prioridade vertical
   const strategies = [
     () => packByVolume(items3D, truckDimensions),
     () => packByLayers(items3D, truckDimensions),
@@ -2003,7 +2238,7 @@ function calculate3DPacking(items, truckDimensions) {
         maxPackedItems = result.totalPackedItems;
       }
     } catch (error) {
-      console.warn('Erro na estratégia de empacotamento 3D:', error.message);
+      console.warn('Erro na estratégia de empacotamento 3D vertical:', error.message);
     }
   }
   
@@ -2011,24 +2246,36 @@ function calculate3DPacking(items, truckDimensions) {
 }
 
 function getItem3DDimensions(item) {
+  // PRIORIZAR POSIÇÃO VERTICAL (em pé) - só rotacionar se necessário
   if (item.canShape === 'cylinder') {
-    // Para cilindros, usar bounding box
+    // Para cilindros, manter vertical (em pé) por padrão
     const diameter = item.diameter_cm || item.width_cm || 30; // valor padrão
     const height = item.height_cm || 30;
     return {
-      length: diameter,
-      width: diameter,
-      height: height,
+      length: diameter,  // diâmetro como comprimento
+      width: diameter,   // diâmetro como largura  
+      height: height,    // altura vertical
       type: 'cylinder',
-      diameter: diameter
+      diameter: diameter,
+      orientation: 'vertical' // posição padrão: em pé
+    };
+  } else if (item.canShape === 'container') {
+    // Para containers, manter na orientação padrão vertical
+    return {
+      length: 115,   // 1.15m largura
+      width: 115,    // 1.15m comprimento  
+      height: 116,   // 1.16m altura
+      type: 'container',
+      orientation: 'vertical'
     };
   } else {
-    // Para formas quadradas/retangulares
+    // Para formas quadradas/retangulares, manter altura como dimensão principal
     return {
       length: item.length_cm || 30,
       width: item.width_cm || 30,
       height: item.height_cm || 30,
-      type: 'box'
+      type: 'box',
+      orientation: 'vertical'
     };
   }
 }
@@ -2037,7 +2284,8 @@ function packByVolume(items, truckDimensions) {
   const { length_cm: truckLength, width_cm: truckWidth, height_cm: truckHeight } = truckDimensions;
   const truckVolume = truckLength * truckWidth * truckHeight;
   
-  let totalItemVolume = 0;
+  let totalRealVolume = 0;
+  let totalBoundingBoxVolume = 0;
   let totalPackedItems = 0;
   const packedItems = [];
   
@@ -2048,45 +2296,71 @@ function packByVolume(items, truckDimensions) {
     height: truckHeight
   };
   
-  // Ordenar itens por volume (maiores primeiro)
+  // Ordenar itens por volume real (maiores primeiro)
   const sortedItems = items.sort((a, b) => {
-    const volA = a.dimensions.length * a.dimensions.width * a.dimensions.height;
-    const volB = b.dimensions.length * b.dimensions.width * b.dimensions.height;
+    const volA = calculateRealVolume(a.dimensions).realVolume;
+    const volB = calculateRealVolume(b.dimensions).realVolume;
     return volB - volA;
   });
   
   for (const item of sortedItems) {
-    const itemVolume = item.dimensions.length * item.dimensions.width * item.dimensions.height;
+    const volumeData = calculateRealVolume(item.dimensions);
     
     for (let i = 0; i < item.quantity; i++) {
-      if (canFitIn3DSpace(item.dimensions, availableSpace)) {
-        totalItemVolume += itemVolume;
+      // Verificar se cabe na posição vertical (em pé)
+      const needsRotation = checkIfRotationNeeded(item.dimensions, availableSpace);
+      const finalDimensions = getItemRotatedDimensions(item.dimensions, availableSpace);
+      
+      if (finalDimensions.height <= availableSpace.height &&
+          finalDimensions.length <= availableSpace.length &&
+          finalDimensions.width <= availableSpace.width) {
+        
+        totalRealVolume += volumeData.realVolume;
+        totalBoundingBoxVolume += volumeData.boundingBoxVolume;
         totalPackedItems++;
         
         packedItems.push({
           canId: item.canId,
           canName: item.canName,
-          dimensions: item.dimensions,
-          position: findOptimalPosition(item.dimensions, availableSpace, packedItems)
+          dimensions: finalDimensions,
+          volumeData: calculateRealVolume(finalDimensions),
+          position: findOptimalPosition(finalDimensions, availableSpace, packedItems),
+          orientation: finalDimensions.orientation || 'vertical',
+          rotated: finalDimensions.rotated || false,
+          geometry: volumeData.geometry
         });
         
-        // Atualizar espaço disponível (simplificado)
-        updateAvailableSpace(availableSpace, item.dimensions);
+        // Atualizar espaço disponível
+        updateAvailableSpace(availableSpace, finalDimensions);
       }
     }
   }
   
-  const usedVolumePercentage = (totalItemVolume / truckVolume) * 100;
-  const unusedVolume = truckVolume - totalItemVolume;
+  const usedVolumePercentage = (totalRealVolume / truckVolume) * 100;
+  const unusedVolume = truckVolume - totalRealVolume;
+  
+  // Calcular estatísticas de rotação e geometria
+  const rotatedItems = packedItems.filter(item => item.rotated);
+  const rotationRate = (rotatedItems.length / packedItems.length) * 100;
+  
+  const geometryEfficiency = calculatePackingEfficiencyWithGeometry(packedItems);
   
   return {
-    strategy: 'volume_based',
+    strategy: 'volume_based_geometry',
     totalPackedItems,
-    totalItemVolume,
+    totalRealVolume,
+    totalBoundingBoxVolume,
+    totalWastedSpace: geometryEfficiency.totalWastedSpace,
     truckVolume,
     usedVolumePercentage,
     unusedVolume,
     packedItems,
+    rotationStats: {
+      totalItems: packedItems.length,
+      rotatedItems: rotatedItems.length,
+      rotationRate: rotationRate.toFixed(1) + '%'
+    },
+    geometryStats: geometryEfficiency,
     fits: totalPackedItems === items.reduce((sum, item) => sum + item.quantity, 0)
   };
 }
@@ -2104,10 +2378,13 @@ function packByLayers(items, truckDimensions) {
   for (const [height, heightItems] of itemsByHeight) {
     if (currentHeight + height > truckHeight) break;
     
-    const layerResult = pack2DLayer(heightItems, {
+    const layerSpace = {
       length: truckLength,
-      width: truckWidth
-    }, currentHeight);
+      width: truckWidth,
+      height: height
+    };
+    
+    const layerResult = pack2DLayerVertical(heightItems, layerSpace, currentHeight);
     
     totalPackedItems += layerResult.packedCount;
     packedItems.push(...layerResult.items);
@@ -2120,8 +2397,12 @@ function packByLayers(items, truckDimensions) {
   
   const truckVolume = truckLength * truckWidth * truckHeight;
   
+  // Calcular estatísticas de rotação
+  const rotatedItems = packedItems.filter(item => item.rotated);
+  const rotationRate = (rotatedItems.length / packedItems.length) * 100;
+  
   return {
-    strategy: 'layer_based',
+    strategy: 'layer_based_vertical',
     totalPackedItems,
     totalItemVolume,
     truckVolume,
@@ -2129,6 +2410,11 @@ function packByLayers(items, truckDimensions) {
     unusedVolume: truckVolume - totalItemVolume,
     packedItems,
     layersUsed: Math.ceil(currentHeight / Math.max(...items.map(i => i.dimensions.height))),
+    rotationStats: {
+      totalItems: packedItems.length,
+      rotatedItems: rotatedItems.length,
+      rotationRate: rotationRate.toFixed(1) + '%'
+    },
     fits: totalPackedItems === items.reduce((sum, item) => sum + item.quantity, 0)
   };
 }
@@ -2139,23 +2425,20 @@ function packByOptimalRotation(items, truckDimensions) {
   let bestResult = null;
   let maxPackedItems = 0;
   
-  // Tentar diferentes rotações do caminhão
+  // Tentar diferentes rotações do caminhão, mas mantendo itens verticais
   const truckRotations = [
     { length: truckLength, width: truckWidth, height: truckHeight },
-    { length: truckWidth, width: truckLength, height: truckHeight },
-    { length: truckLength, width: truckHeight, height: truckWidth },
-    { length: truckWidth, width: truckHeight, height: truckLength },
-    { length: truckHeight, width: truckLength, height: truckWidth },
-    { length: truckHeight, width: truckWidth, height: truckLength }
+    { length: truckWidth, width: truckLength, height: truckHeight }
   ];
   
   for (const rotation of truckRotations) {
+    // Usar packByVolume que já tem a lógica vertical
     const result = packByVolume(items, rotation);
     if (result.totalPackedItems > maxPackedItems) {
       maxPackedItems = result.totalPackedItems;
       bestResult = {
         ...result,
-        strategy: 'optimal_rotation',
+        strategy: 'optimal_rotation_vertical',
         truckRotation: rotation
       };
     }

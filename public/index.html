@@ -8,6 +8,7 @@
     <link rel="shortcut icon" href="./logo.jpg" />
     <link rel="apple-touch-icon" href="./logo.jpg" />
     <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   </head>
   <body>
     <header class="topbar">
@@ -271,6 +272,38 @@
                   <div id="automatic-calc-panel">
                     <button id="calculate-btn" class="btn btn-dark">Calcular no modo automático</button>
                     <div id="calculation-result" class="result-box hidden"></div>
+                    
+                    <!-- Visualização 3D Integrada -->
+                    <div id="visualization-3d-container" class="visualization-container hidden">
+                      <div class="visualization-header">
+                        <h4>🎨 Visualização 3D da Carga</h4>
+                        <div class="visualization-controls">
+                          <button id="toggle-3d-btn" class="btn btn-secondary" type="button">
+                            <span id="toggle-text">Mostrar 3D</span>
+                          </button>
+                          <button id="reset-3d-btn" class="btn btn-secondary" type="button">🔄 Resetar</button>
+                        </div>
+                      </div>
+                      <div id="visualization-3d" class="visualization-3d"></div>
+                      <div id="visualization-stats" class="visualization-stats">
+                        <div class="stat-item">
+                          <span class="stat-label">Volume Total:</span>
+                          <span class="stat-value" id="viz-volume-total">0.000 m³</span>
+                        </div>
+                        <div class="stat-item">
+                          <span class="stat-label">Volume Real:</span>
+                          <span class="stat-value" id="viz-volume-real">0.000 m³</span>
+                        </div>
+                        <div class="stat-item">
+                          <span class="stat-label">Eficiência:</span>
+                          <span class="stat-value" id="viz-eficiencia">0.0%</span>
+                        </div>
+                        <div class="stat-item">
+                          <span class="stat-label">Ocupação:</span>
+                          <span class="stat-value" id="viz-ocupacao">0.0%</span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
                   <div id="manual-calc-panel" class="manual-area hidden">

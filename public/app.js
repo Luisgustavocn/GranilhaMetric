@@ -3292,3 +3292,285 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 }
+
+// Variáveis globais para visualização 3D
+let scene3D, camera3D, renderer3D;
+let truckMesh3D, itemsGroup3D;
+let mouseX = 0, mouseY = 0;
+let targetRotationX = 0, targetRotationY = 0;
+let currentRotationX = 0, currentRotationY = 0;
+let isVisualization3DVisible = false;
+
+// Cores simples para cada tipo de embalagem
+const PACKAGE_COLORS = {
+    'Balde 25kg': 0xff6b6b,      // vermelho
+    'Balde 18L': 0x4ecdc4,       // ciano
+    'Galão 3.6L': 0x45b7d1,      // azul
+    'Galão 3.2L': 0x96ceb4,      // azul claro
+    'Lata Solvente 5L': 0xbb8fce, // azul bebê
+    'Lata 18L': 0xa8e6cf,       // verde claro
+    'Barrica 25kg': 0xffe66d,     // amarelo
+    'Tambor 200L': 0xff6f61,     // laranja
+    'Container': 0x88d8b0,       // verde
+    'default': 0x95a5a6           // cinza
+};
+
+// Inicializar visualização 3D
+function initVisualization3D() {
+    const container = document.getElementById('visualization-3d');
+    if (!container) return;
+    
+    // Cena estática
+    scene3D = new THREE.Scene();
+    scene3D.background = new THREE.Color(0xf0f0f0); // fundo branco limpo
+
+    // Câmera fixa
+    camera3D = new THREE.PerspectiveCamera(60, container.clientWidth / 400, 0.1, 1000);
+    camera3D.position.set(15, 15, 15); // posição fixa
+    camera3D.lookAt(0, 0, 0);
+
+    // Renderer
+    renderer3D = new THREE.WebGLRenderer({ 
+        antialias: true,
+        alpha: false
+    });
+    renderer3D.setSize(container.clientWidth, 400);
+    container.appendChild(renderer3D.domElement);
+
+    // Iluminação simples e fixa
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    scene3D.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    directionalLight.position.set(10, 20, 10);
+    scene3D.add(directionalLight);
+
+    // Chão simples
+    const floorGeometry = new THREE.PlaneGeometry(50, 50);
+    const floorMaterial = new THREE.MeshLambertMaterial({ color: 0xe0e0e0 });
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -0.5;
+    scene3D.add(floor);
+
+    // Caminhão estático
+    createStaticTruck3D();
+
+    // Criar itens estáticos
+    createStaticItems3D();
+
+    // Renderizar apenas uma vez (sem animação)
+    renderer3D.render(scene3D, camera3D);
+}
+
+function createStaticTruck3D() {
+    const truckLength = 14.5;
+    const truckWidth = 2.45;
+    const truckHeight = 1.70;
+
+    truckMesh3D = new THREE.Group();
+
+    // Chão do caminhão
+    const floorGeometry = new THREE.BoxGeometry(truckLength, 0.2, truckWidth);
+    const floorMaterial = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.position.y = 0;
+    truckMesh3D.add(floor);
+
+    // Paredes do caminhão (linhas simples)
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0x666666, linewidth: 2 });
+
+    // Criar linhas das bordas
+    const edges = [
+        // Frente
+        new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-truckLength/2, 0, -truckWidth/2),
+            new THREE.Vector3(-truckLength/2, truckHeight, -truckWidth/2)
+        ]),
+        // Trás
+        new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(truckLength/2, 0, -truckWidth/2),
+            new THREE.Vector3(truckLength/2, truckHeight, -truckWidth/2)
+        ]),
+        // Esquerda
+        new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-truckLength/2, 0, -truckWidth/2),
+            new THREE.Vector3(truckLength/2, truckHeight, -truckWidth/2)
+        ]),
+        // Direita
+        new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-truckLength/2, 0, truckWidth/2),
+            new THREE.Vector3(truckLength/2, truckHeight, truckWidth/2)
+        ])
+    ];
+
+    edges.forEach(edge => {
+        const line = new THREE.Line(edge, lineMaterial);
+        truckMesh3D.add(line);
+    });
+
+    // Grupo para itens
+    itemsGroup3D = new THREE.Group();
+    truckMesh3D.add(itemsGroup3D);
+
+    scene3D.add(truckMesh3D);
+}
+
+function createStaticItems3D() {
+    if (!state.cargoItems.length) return;
+
+    // Agrupar itens iguais por tipo
+    const groupedItems = {};
+    state.cargoItems.forEach(item => {
+        const can = state.cans.find(c => c.id === item.canId);
+        if (!can) return;
+        
+        const key = can.name;
+        if (!groupedItems[key]) {
+            groupedItems[key] = {
+                can: can,
+                totalQuantity: 0,
+                color: PACKAGE_COLORS[can.name] || PACKAGE_COLORS['default']
+            };
+        }
+        groupedItems[key].totalQuantity += item.quantity;
+    });
+
+    let totalVolume = 0;
+    let totalRealVolume = 0;
+
+    // Posição inicial para empilhamento organizado de blocos
+    let currentX = -6;
+    let currentZ = -1;
+    let currentY = 0.5;
+    let blocksPerRow = 0;
+
+    // Renderizar cada tipo como um bloco
+    Object.values(groupedItems).forEach((group, index) => {
+        const can = group.can;
+        
+        // Calcular tamanho do bloco baseado na quantidade
+        let blockSize = 1.0;
+        let itemsPerBlock = 1;
+        
+        if (can.name.includes('Balde')) {
+            blockSize = can.name.includes('25kg') ? 2.0 : 1.5;
+            itemsPerBlock = Math.min(group.totalQuantity, 4); // máximo 4 por bloco
+        } else if (can.name.includes('Galão')) {
+            blockSize = can.name.includes('3.6L') ? 1.2 : 1.0;
+            itemsPerBlock = Math.min(group.totalQuantity, 6); // máximo 6 por bloco
+        } else if (can.name.includes('Lata')) {
+            blockSize = 0.8;
+            itemsPerBlock = Math.min(group.totalQuantity, 8); // máximo 8 por bloco
+        } else if (can.name.includes('Barrica')) {
+            blockSize = 1.8;
+            itemsPerBlock = Math.min(group.totalQuantity, 3); // máximo 3 por bloco
+        } else if (can.name.includes('Tambor')) {
+            blockSize = 2.0;
+            itemsPerBlock = Math.min(group.totalQuantity, 2); // máximo 2 por bloco
+        } else if (can.name.includes('Container')) {
+            blockSize = 1.5;
+            itemsPerBlock = Math.min(group.totalQuantity, 2); // máximo 2 por bloco
+        }
+
+        // Calcular quantos blocos deste tipo
+        const totalBlocks = Math.ceil(group.totalQuantity / itemsPerBlock);
+        
+        // Renderizar cada bloco
+        for (let blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
+            const itemsInThisBlock = Math.min(itemsPerBlock, group.totalQuantity - (blockIndex * itemsPerBlock));
+            
+            // Criar geometria do bloco (tamanho proporcional à quantidade)
+            const blockWidth = blockSize * (1 + itemsInThisBlock * 0.1);
+            const blockDepth = blockSize * (1 + itemsInThisBlock * 0.1);
+            const blockHeight = blockSize;
+            
+            const geometry = new THREE.BoxGeometry(blockWidth, blockHeight, blockDepth);
+            const material = new THREE.MeshLambertMaterial({ color: group.color });
+            const blockMesh = new THREE.Mesh(geometry, material);
+            
+            // Posicionar bloco
+            blockMesh.position.set(currentX, currentY, currentZ);
+            
+            // Atualizar posição para próximo bloco
+            currentX += blockWidth + 0.2;
+            blocksPerRow++;
+            
+            if (blocksPerRow >= 3) { // máximo 3 blocos por linha
+                blocksPerRow = 0;
+                currentX = -6;
+                currentZ += blockDepth + 0.2;
+            }
+            
+            if (currentZ > 1) { // nova camada
+                currentZ = -1;
+                currentY += blockHeight + 0.2;
+            }
+            
+            itemsGroup3D.add(blockMesh);
+            
+            // Calcular volumes (bloco inteiro)
+            const blockVolume = blockWidth * blockHeight * blockDepth;
+            totalVolume += blockVolume;
+            totalRealVolume += blockVolume;
+        }
+    });
+
+    // Atualizar estatísticas
+    const efficiency = totalVolume > 0 ? (totalRealVolume / totalVolume) * 100 : 100;
+    const ocupacao = (totalRealVolume / (14.5 * 2.45 * 1.70)) * 100;
+
+    document.getElementById('viz-volume-total').textContent = totalVolume.toFixed(3) + ' m³';
+    document.getElementById('viz-volume-real').textContent = totalRealVolume.toFixed(3) + ' m³';
+    document.getElementById('viz-eficiencia').textContent = efficiency.toFixed(1) + '%';
+    document.getElementById('viz-ocupacao').textContent = ocupacao.toFixed(1) + '%';
+}
+
+// Event listeners para visualização 3D estática
+document.addEventListener('DOMContentLoaded', () => {
+    const toggleBtn = document.getElementById('toggle-3d-btn');
+    const resetBtn = document.getElementById('reset-3d-btn');
+    const toggleText = document.getElementById('toggle-text');
+    
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+            const container = document.getElementById('visualization-3d-container');
+            
+            if (container.classList.contains('hidden')) {
+                // Mostrar visualização 3D estática
+                container.classList.remove('hidden');
+                toggleText.textContent = 'Ocultar 3D';
+                isVisualization3DVisible = true;
+                
+                if (!scene3D) {
+                    initVisualization3D();
+                }
+                
+                updateVisualization3D();
+            } else {
+                // Ocultar visualização 3D
+                container.classList.add('hidden');
+                toggleText.textContent = 'Mostrar 3D';
+                isVisualization3DVisible = false;
+            }
+        });
+    }
+    
+    // Botão reset não faz nada na versão estática
+    if (resetBtn) {
+        resetBtn.style.display = 'none'; // esconder botão reset
+    }
+    
+    // Atualizar visualização quando os itens mudam
+    const observer = new MutationObserver(() => {
+        if (isVisualization3DVisible) {
+            updateVisualization3D();
+        }
+    });
+    
+    const cargoItemsElement = document.getElementById('cargo-items');
+    if (cargoItemsElement) {
+        observer.observe(cargoItemsElement, { childList: true, subtree: true });
+    }
+});
+

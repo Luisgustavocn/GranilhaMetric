@@ -16,6 +16,8 @@
   --radius-md: 14px;
   --radius-sm: 10px;
   --shadow: 0 18px 42px rgba(17, 19, 27, 0.09);
+  --visualization-bg: rgba(0, 0, 0, 0.85);
+  --visualization-border: rgba(255, 255, 255, 0.2);
 }
 
 * {
@@ -2423,3 +2425,86 @@ tbody tr:last-child td {
     grid-template-columns: 1fr;
   }
 }
+
+/* Estilos para Visualização 3D Integrada */
+.visualization-container {
+  position: relative;
+  margin-top: 20px;
+  border-radius: var(--radius-md);
+  background: var(--visualization-bg);
+  border: 1px solid var(--visualization-border);
+  backdrop-filter: blur(8px);
+}
+
+.visualization-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  border-bottom: 1px solid var(--visualization-border);
+}
+
+.visualization-header h4 {
+  margin: 0;
+  color: #4ade80;
+  font-size: 16px;
+}
+
+.visualization-controls {
+  display: flex;
+  gap: 10px;
+}
+
+/* Esconder botão reset na versão estática */
+#reset-3d-btn {
+  display: none;
+}
+
+.visualization-3d {
+  height: 400px;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  overflow: hidden;
+  position: relative;
+}
+
+.visualization-stats {
+  padding: 15px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.visualization-stats .stat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.visualization-stats .stat-label {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+}
+
+.visualization-stats .stat-value {
+  color: #fff;
+  font-weight: bold;
+}
+
+/* Ajustes para acomodar visualização 3D */
+.automatic-calc-panel {
+  position: relative;
+}
+
+#visualization-3d-container:not(.hidden) {
+  margin-bottom: 20px;
+}
+
+#visualization-3d-container.hidden {
+  display: none;
+}
+
