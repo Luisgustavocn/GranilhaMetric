@@ -33,7 +33,17 @@ const state = {
     startDate: '',
     endDate: ''
   },
+  canFilters: {
+    search: '',
+    category: 'all',
+    shape: 'all'
+  },
+  cargoFilters: {
+    search: '',
+    client: 'all'
+  },
   currentView: 'inicio-section',
+  csrfToken: null,
   modal: null,
   confirmModal: null
 };
@@ -83,17 +93,29 @@ const currentClientName = document.getElementById('current-client-name');
 const stepClient = document.getElementById('step-client');
 const stepItems = document.getElementById('step-items');
 const stepLaunch = document.getElementById('step-launch');
+const clientSelectionSection = document.getElementById('client-selection-section');
 const itemsSection = document.getElementById('items-section');
 const multiClientActions = document.getElementById('multi-client-actions');
 const addMoreClientsBtn = document.getElementById('add-more-clients-btn');
 const finishClientsBtn = document.getElementById('finish-clients-btn');
+const backToItemsBtn = document.getElementById('back-to-items-btn');
 const launchSection = document.getElementById('launch-section');
 const clientInput = document.getElementById('client-input');
 const quantityInput = document.getElementById('quantity-input');
 const manualTruckSelect = document.getElementById('manual-truck-select');
 const manualAllocationList = document.getElementById('manual-allocation-list');
 const cargoBody = document.getElementById('cargo-body');
+const cargoClientHeader = document.getElementById('cargo-client-header');
 const cansBody = document.getElementById('cans-body');
+const cansSearchInput = document.getElementById('cans-search-input');
+const cansCategoryFilter = document.getElementById('cans-category-filter');
+const cansShapeFilter = document.getElementById('cans-shape-filter');
+const cansClearFiltersBtn = document.getElementById('cans-clear-filters-btn');
+const cansFilterCount = document.getElementById('cans-filter-count');
+const cargoSearchInput = document.getElementById('cargo-search-input');
+const cargoClientFilter = document.getElementById('cargo-client-filter');
+const cargoClearFiltersBtn = document.getElementById('cargo-clear-filters-btn');
+const cargoFilterCount = document.getElementById('cargo-filter-count');
 const categoriesBody = document.getElementById('categories-body');
 const clientsBody = document.getElementById('clients-body');
 const trucksBody = document.getElementById('trucks-body');
@@ -101,6 +123,7 @@ const usersBody = document.getElementById('users-body');
 const ordersBody = document.getElementById('orders-body');
 const manualResultBox = document.getElementById('manual-result');
 const entityModalOverlay = document.getElementById('entity-modal-overlay');
+const entityModalCard = entityModalOverlay?.querySelector('.modal-card');
 const closeEntityModalBtn = document.getElementById('close-entity-modal-btn');
 const entityModalTitle = document.getElementById('entity-modal-title');
 const entityModalContent = document.getElementById('entity-modal-content');
@@ -138,6 +161,12 @@ const agendaSummary = document.getElementById('agenda-summary');
 const agendaRangeLabel = document.getElementById('agenda-range-label');
 const agendaCalendarTable = document.getElementById('agenda-calendar-table');
 const agendaReservationsList = document.getElementById('agenda-reservations-list');
+const toggle3DBtn = document.getElementById('toggle-3d-btn');
+const toggle3DText = document.getElementById('toggle-text');
+const visualization3DContainer = document.getElementById('visualization-3d-container');
+const visualization3DHelper = document.getElementById('visualization-3d-helper');
+const launchOrder3DIframe = document.getElementById('launch-order-3d-iframe');
+const launchSummaryContent = document.getElementById('launch-summary-content');
 const agendaTrucksList = document.getElementById('agenda-trucks-list');
 const ordersSearchInput = document.getElementById('orders-search-input');
 const ordersStatusFilter = document.getElementById('orders-status-filter');
@@ -168,6 +197,7 @@ function bindEvents() {
   createClientBtn.addEventListener('click', onCreateNewClient);
   addMoreClientsBtn.addEventListener('click', onAddMoreClients);
   finishClientsBtn.addEventListener('click', onFinishClients);
+  backToItemsBtn?.addEventListener('click', onBackToItems);
   manualTruckForm.addEventListener('submit', onManualSingleSimulation);
   manualMultiCalcBtn.addEventListener('click', onManualMultiSimulation);
   addManualAllocationBtn.addEventListener('click', onAddManualAllocation);
@@ -193,6 +223,13 @@ function bindEvents() {
   ordersStartFilter?.addEventListener('change', onOrderFiltersChange);
   ordersEndFilter?.addEventListener('change', onOrderFiltersChange);
   ordersClearFiltersBtn?.addEventListener('click', clearOrderFilters);
+  cansSearchInput?.addEventListener('input', onCanFiltersChange);
+  cansCategoryFilter?.addEventListener('change', onCanFiltersChange);
+  cansShapeFilter?.addEventListener('change', onCanFiltersChange);
+  cansClearFiltersBtn?.addEventListener('click', clearCanFilters);
+  cargoSearchInput?.addEventListener('input', onCargoFiltersChange);
+  cargoClientFilter?.addEventListener('change', onCargoFiltersChange);
+  cargoClearFiltersBtn?.addEventListener('click', clearCargoFilters);
   manualDistributionTypeSelect.addEventListener('change', onManualDistributionTypeChange);
   manualTruckSelect.addEventListener('change', () => {
     const selected = Number(manualTruckSelect.value);
@@ -249,11 +286,13 @@ function bindEvents() {
 async function tryLoadSession() {
   const response = await api('/api/me');
   if (!response.ok) {
+    state.csrfToken = null;
     renderLoggedOut();
     return;
   }
 
   state.user = response.data.user;
+  state.csrfToken = response.data.csrfToken || null;
   await loadData();
   renderApp();
 }
@@ -273,6 +312,7 @@ async function onLogin(event) {
   }
 
   state.user = response.data.user;
+  state.csrfToken = response.data.csrfToken || null;
   loginForm.reset();
   state.cargoItems = [];
   await loadData();
@@ -284,6 +324,7 @@ async function onLogout() {
   closeAccountMenu();
   await api('/api/logout', { method: 'POST', body: {} });
   state.user = null;
+  state.csrfToken = null;
   state.cargoItems = [];
   renderLoggedOut();
 }
@@ -343,6 +384,7 @@ function renderLoggedOut() {
   state.todayBusyTrucks = [];
   state.truckSchedule = null;
   state.lastCalculation = null;
+  state.csrfToken = null;
   state.currentView = 'inicio-section';
   closeEntityModal();
 }
@@ -693,9 +735,60 @@ function buildOverviewListHtml(items, emptyMessage) {
     .join('');
 }
 
+function onCanFiltersChange() {
+  state.canFilters.search = String(cansSearchInput?.value || '').trim();
+  state.canFilters.category = String(cansCategoryFilter?.value || 'all').trim() || 'all';
+  state.canFilters.shape = String(cansShapeFilter?.value || 'all').trim() || 'all';
+  renderCans();
+}
+
+function clearCanFilters() {
+  state.canFilters = {
+    search: '',
+    category: 'all',
+    shape: 'all'
+  };
+  syncCanFilterInputs();
+  renderCans();
+}
+
+function syncCanFilterInputs() {
+  if (cansSearchInput) cansSearchInput.value = state.canFilters.search;
+  if (cansCategoryFilter) cansCategoryFilter.value = state.canFilters.category;
+  if (cansShapeFilter) cansShapeFilter.value = state.canFilters.shape;
+}
+
+function getFilteredCans() {
+  const { search, category, shape } = state.canFilters;
+  const normalizedSearch = normalizeText(search);
+
+  return state.cans.filter((can) => {
+    if (category !== 'all' && String(can.category_id || '') !== category) {
+      return false;
+    }
+
+    if (shape !== 'all' && can.shape !== shape) {
+      return false;
+    }
+
+    if (!normalizedSearch) {
+      return true;
+    }
+
+    return normalizeText(`${can.name} ${can.category_name || ''} ${can.shape}`).includes(normalizedSearch);
+  });
+}
+
 function renderCans() {
   cansBody.innerHTML = '';
   canSelect.innerHTML = '';
+
+  for (const can of state.cans) {
+    const option = document.createElement('option');
+    option.value = String(can.id);
+    option.textContent = `${can.name} (${formatVolume(can.volume_cm3)})`;
+    canSelect.appendChild(option);
+  }
   
   // Popular select de categorias no formulário de latas
   const categorySelect = document.getElementById('category-select');
@@ -708,16 +801,39 @@ function renderCans() {
       categorySelect.appendChild(option);
     }
   }
+
+  if (cansCategoryFilter) {
+    cansCategoryFilter.innerHTML = '<option value="all">Todas</option>';
+    for (const category of state.categories) {
+      const option = document.createElement('option');
+      option.value = String(category.id);
+      option.textContent = category.name;
+      cansCategoryFilter.appendChild(option);
+    }
+  }
+  syncCanFilterInputs();
+
+  const filteredCans = getFilteredCans();
+  if (cansFilterCount) {
+    const total = state.cans.length;
+    cansFilterCount.textContent = filteredCans.length === total
+      ? `${filteredCans.length} lata(s)`
+      : `${filteredCans.length} de ${total} lata(s)`;
+  }
   
-  const hasSelection = state.cans.some((can) => can.id === state.selectedCanId);
+  const hasSelection = filteredCans.some((can) => can.id === state.selectedCanId);
   if (!hasSelection) {
-    state.selectedCanId = state.cans[0]?.id ?? null;
+    state.selectedCanId = filteredCans[0]?.id ?? null;
   }
   if (!state.selectedCanId && state.modal?.type === 'can') {
     closeEntityModal();
   }
 
-  for (const can of state.cans) {
+  if (!filteredCans.length) {
+    cansBody.innerHTML = '<tr><td colspan="4" class="text-center">Nenhuma lata encontrada com os filtros atuais.</td></tr>';
+  }
+
+  for (const can of filteredCans) {
     const tr = document.createElement('tr');
     tr.classList.add('selectable-row');
     if (can.id === state.selectedCanId) {
@@ -736,11 +852,6 @@ function renderCans() {
     });
 
     cansBody.appendChild(tr);
-
-    const option = document.createElement('option');
-    option.value = String(can.id);
-    option.textContent = `${can.name} (${formatVolume(can.volume_cm3)})`;
-    canSelect.appendChild(option);
   }
 }
 
@@ -937,6 +1048,26 @@ function updateClientStats() {
   if (activeClientsEl) activeClientsEl.textContent = activeClients;
   if (newClientsMonthEl) newClientsMonthEl.textContent = newClientsMonth;
   if (totalOrdersEl) totalOrdersEl.textContent = totalOrders;
+}
+
+function onCargoFiltersChange() {
+  state.cargoFilters.search = String(cargoSearchInput?.value || '').trim();
+  state.cargoFilters.client = String(cargoClientFilter?.value || 'all').trim() || 'all';
+  renderCargoBuilder({ preserveResults: true });
+}
+
+function clearCargoFilters() {
+  state.cargoFilters = {
+    search: '',
+    client: 'all'
+  };
+  syncCargoFilterInputs();
+  renderCargoBuilder({ preserveResults: true });
+}
+
+function syncCargoFilterInputs() {
+  if (cargoSearchInput) cargoSearchInput.value = state.cargoFilters.search;
+  if (cargoClientFilter) cargoClientFilter.value = state.cargoFilters.client;
 }
 
 function renderUsers() {
@@ -1254,10 +1385,13 @@ function buildAgendaDayLookup(truck, dates) {
   return { byDate, busyDays, peakReservedQuantity };
 }
 
-function renderCargoBuilder() {
+function renderCargoBuilder(options = {}) {
+  const preserveResults = options.preserveResults === true;
   cargoBody.innerHTML = '';
-  resultBox.classList.add('hidden');
-  manualResultBox.classList.add('hidden');
+  if (!preserveResults) {
+    resultBox.classList.add('hidden');
+    manualResultBox.classList.add('hidden');
+  }
 
   // Popular select de clientes
   selectedClient.innerHTML = '<option value="">Selecione um cliente...</option><option value="_new">+ Criar novo cliente</option>';
@@ -1268,36 +1402,109 @@ function renderCargoBuilder() {
     selectedClient.appendChild(option);
   }
 
+  if (cargoClientFilter) {
+    const currentClients = [...new Set(state.cargoItems.map((item) => item.clientName || 'Sem nome'))];
+    cargoClientFilter.innerHTML = '<option value="all">Todos</option>';
+    currentClients.forEach((clientName) => {
+      const option = document.createElement('option');
+      option.value = clientName;
+      option.textContent = clientName;
+      cargoClientFilter.appendChild(option);
+    });
+    if (!currentClients.includes(state.cargoFilters.client)) {
+      state.cargoFilters.client = 'all';
+    }
+  }
+  syncCargoFilterInputs();
+
   // Se não tiver itens, mostrar mensagem diferente
   if (!state.cargoItems.length) {
+    if (cargoClientHeader) {
+      cargoClientHeader.style.display = '';
+    }
+    multiClientActions.style.display = 'none';
+    if (cargoFilterCount) {
+      cargoFilterCount.textContent = '0 item(ns)';
+    }
     cargoBody.innerHTML = '<tr><td colspan="6" class="text-center">Nenhum item na carga. Selecione um cliente e adicione itens.</td></tr>';
+    renderLaunchReviewSummary();
+    syncVisualization3DPanel();
     return;
   }
 
   // Agrupar itens por cliente para exibição
   const itemsByClient = {};
+  const clientOrder = [];
   state.cargoItems.forEach(item => {
-    if (!itemsByClient[item.clientName]) {
-      itemsByClient[item.clientName] = [];
+    const clientName = item.clientName || 'Sem nome';
+    if (!itemsByClient[clientName]) {
+      itemsByClient[clientName] = [];
+      clientOrder.push(clientName);
     }
-    itemsByClient[item.clientName].push(item);
+    itemsByClient[clientName].push(item);
   });
 
+  const normalizedCargoSearch = normalizeText(state.cargoFilters.search);
+  const filteredItemsByClient = {};
+  const filteredClientOrder = [];
+
+  clientOrder.forEach((clientName) => {
+    if (state.cargoFilters.client !== 'all' && clientName !== state.cargoFilters.client) {
+      return;
+    }
+
+    const matchingItems = (itemsByClient[clientName] || []).filter((item) => {
+      if (!normalizedCargoSearch) return true;
+      const can = state.cans.find((entry) => entry.id === item.canId);
+      return normalizeText(`${clientName} ${can?.name || ''}`).includes(normalizedCargoSearch);
+    });
+
+    if (!matchingItems.length) return;
+    filteredItemsByClient[clientName] = matchingItems;
+    filteredClientOrder.push(clientName);
+  });
+
+  const visibleItemCount = filteredClientOrder.reduce((sum, clientName) => sum + (filteredItemsByClient[clientName]?.length || 0), 0);
+  if (cargoFilterCount) {
+    cargoFilterCount.textContent = visibleItemCount === state.cargoItems.length
+      ? `${visibleItemCount} item(ns)`
+      : `${visibleItemCount} de ${state.cargoItems.length} item(ns)`;
+  }
+
   // Mostrar/esconder botões de múltiplos clientes
+  const showClientColumn = Object.keys(itemsByClient).length > 1;
+  if (cargoClientHeader) {
+    cargoClientHeader.style.display = showClientColumn ? '' : 'none';
+  }
+
   if (Object.keys(itemsByClient).length > 0) {
     multiClientActions.style.display = 'block';
   } else {
     multiClientActions.style.display = 'none';
   }
 
-  let isFirstClient = true;
-  Object.entries(itemsByClient).forEach(([clientName, items]) => {
+  if (!filteredClientOrder.length) {
+    cargoBody.innerHTML = `<tr><td colspan="${showClientColumn ? 6 : 5}" class="text-center">Nenhum item encontrado com os filtros atuais.</td></tr>`;
+    renderLaunchReviewSummary();
+    syncVisualization3DPanel();
+    return;
+  }
+
+  filteredClientOrder.forEach((clientName, clientIndex) => {
+    const items = filteredItemsByClient[clientName] || [];
     // Adicionar header do cliente se tiver múltiplos clientes
     if (Object.keys(itemsByClient).length > 1) {
       const headerRow = document.createElement('tr');
+      headerRow.className = 'client-header-row';
       headerRow.innerHTML = `
-        <td colspan="6" style="background: var(--brand-yellow); color: var(--brand-black); font-weight: 700; padding: 12px 16px;">
-          📦 Cliente: ${clientName || 'Sem nome'}
+        <td colspan="6">
+          <div class="client-header-toolbar">
+            <span>📦 Cliente: ${escapeHtml(clientName || 'Sem nome')}</span>
+            <div class="client-order-actions">
+              <button class="client-order-btn" data-client="${escapeHtml(clientName)}" data-direction="up" type="button" ${clientIndex === 0 ? 'disabled' : ''}>↑</button>
+              <button class="client-order-btn" data-client="${escapeHtml(clientName)}" data-direction="down" type="button" ${clientIndex === filteredClientOrder.length - 1 ? 'disabled' : ''}>↓</button>
+            </div>
+          </div>
         </td>
       `;
       cargoBody.appendChild(headerRow);
@@ -1313,7 +1520,7 @@ function renderCargoBuilder() {
       const tr = document.createElement('tr');
       
       // Se for múltiplos clientes, mostrar o nome, senão não mostra
-      const clientCell = Object.keys(itemsByClient).length > 1 ? 
+      const clientCell = showClientColumn ? 
         `<td>${escapeHtml(clientName || 'Sem nome')}</td>` : '';
       
       tr.innerHTML = `
@@ -1342,6 +1549,133 @@ function renderCargoBuilder() {
       }
     });
   });
+
+  cargoBody.querySelectorAll('.client-order-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      reorderCargoClientGroup(button.dataset.client, button.dataset.direction);
+    });
+  });
+
+  renderLaunchReviewSummary();
+  syncVisualization3DPanel();
+}
+
+function reorderCargoClientGroup(clientName, direction) {
+  const normalizedClientName = String(clientName || '');
+  const orderedClients = [...new Set(state.cargoItems.map((item) => item.clientName || 'Sem nome'))];
+  const currentIndex = orderedClients.indexOf(normalizedClientName);
+  if (currentIndex === -1) return;
+
+  const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+  if (targetIndex < 0 || targetIndex >= orderedClients.length) return;
+
+  const reorderedClients = [...orderedClients];
+  const [movedClient] = reorderedClients.splice(currentIndex, 1);
+  reorderedClients.splice(targetIndex, 0, movedClient);
+
+  const itemsByClient = new Map();
+  state.cargoItems.forEach((item) => {
+    const key = item.clientName || 'Sem nome';
+    if (!itemsByClient.has(key)) {
+      itemsByClient.set(key, []);
+    }
+    itemsByClient.get(key).push(item);
+  });
+
+  state.cargoItems = reorderedClients.flatMap((key) => itemsByClient.get(key) || []);
+  state.lastCalculation = null;
+  renderCargoBuilder();
+  renderLaunchReviewSummary();
+}
+
+function buildLaunchClientSummary() {
+  const grouped = new Map();
+  state.cargoItems.forEach((item) => {
+    const key = item.clientName || 'Sem nome';
+    if (!grouped.has(key)) {
+      grouped.set(key, { name: key, totalItems: 0, distinctItems: 0, seenCans: new Set() });
+    }
+    const entry = grouped.get(key);
+    entry.totalItems += Number(item.quantity || 0);
+    if (!entry.seenCans.has(item.canId)) {
+      entry.seenCans.add(item.canId);
+      entry.distinctItems += 1;
+    }
+  });
+
+  return Array.from(grouped.values());
+}
+
+function renderLaunchReviewSummary() {
+  if (!launchSummaryContent) return;
+
+  if (!state.cargoItems.length) {
+    launchSummaryContent.innerHTML = '<p class="launch-summary-empty">Monte a carga para visualizar o resumo final.</p>';
+    return;
+  }
+
+  const orderRange = getSelectedOrderRange(false);
+  const clientSummary = buildLaunchClientSummary();
+  const totalUnits = state.cargoItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const totalDistinct = state.cargoItems.length;
+  const trucks = state.lastCalculation?.allocation?.trucks || [];
+  const truckNames = trucks.map((truck) => `${escapeHtml(truck.name)} x${Number(truck.quantity || 1)}`).join(', ') || 'Ainda não calculado';
+  const spatialValidation = state.lastCalculation?.spatialValidation || null;
+  const statusText = spatialValidation?.checked && !spatialValidation.fits
+    ? `Validação 3D reprovada: ${spatialValidation.missingCount} volume(s) ficaram de fora`
+    : state.lastCalculation?.allocation?.fits
+      ? 'Carga comportada'
+      : 'Calcule a carga para validar';
+
+  const clientsHtml = clientSummary.map((client) => {
+    const color = getOrderColor(client.name).toString(16).padStart(6, '0');
+    return `
+      <li class="launch-client-item">
+        <span class="launch-client-chip">
+          <span class="launch-client-swatch" style="background:#${color};"></span>
+          ${escapeHtml(client.name)}
+        </span>
+        <span>${client.totalItems} volumes • ${client.distinctItems} item(ns)</span>
+      </li>
+    `;
+  }).join('');
+
+  launchSummaryContent.innerHTML = `
+    <div class="launch-summary-header">
+      <span class="eyebrow">Resumo Final</span>
+      <h4>Revisão completa do pedido</h4>
+    </div>
+    <div class="launch-summary-grid">
+      <div class="launch-summary-metric">
+        <span class="launch-summary-label">Clientes</span>
+        <strong>${clientSummary.length}</strong>
+      </div>
+      <div class="launch-summary-metric">
+        <span class="launch-summary-label">Volumes</span>
+        <strong>${totalUnits}</strong>
+      </div>
+      <div class="launch-summary-metric">
+        <span class="launch-summary-label">Itens cadastrados</span>
+        <strong>${totalDistinct}</strong>
+      </div>
+      <div class="launch-summary-metric">
+        <span class="launch-summary-label">Período</span>
+        <strong>${orderRange ? `${escapeHtml(formatDate(orderRange.startDate))} a ${escapeHtml(formatDate(orderRange.endDate))}` : 'Não definido'}</strong>
+      </div>
+    </div>
+    <div class="launch-summary-section">
+      <span class="launch-summary-label">Caminhões calculados</span>
+      <p>${truckNames}</p>
+    </div>
+    <div class="launch-summary-section">
+      <span class="launch-summary-label">Status da carga</span>
+      <p>${statusText}</p>
+    </div>
+    <div class="launch-summary-section">
+      <span class="launch-summary-label">Ordem de carregamento dos clientes</span>
+      <ul class="launch-client-list">${clientsHtml}</ul>
+    </div>
+  `;
 }
 
 async function onLaunchOrder() {
@@ -1388,11 +1722,148 @@ async function onLaunchOrder() {
     return;
   }
 
+  closeEntityModal();
+  closeConfirmModal();
+  onCloseClientModal();
   state.cargoItems = [];
   state.lastCalculation = null;
+  state.selectedClientId = null;
+  selectedClient.value = '';
+  currentClientName.textContent = '';
+  newClientLabel.style.display = 'none';
+  clientSelectionSection.style.display = '';
+  itemsSection.style.display = 'none';
+  launchSection.style.display = 'none';
+  state.selectedOrderId = Number(response.data.orderId) || null;
+  updateProgress('client');
+  state.currentView = 'pedidos-section';
   await loadData();
   renderApp();
+  setCurrentView('pedidos-section');
   showToast(`Pedido #${response.data.orderId} lançado com sucesso.`);
+}
+
+function getOrderItemVisualizationDimensions(item) {
+  const height = Number(item.can_height_cm || 0) / 100;
+  if (!(height > 0)) return null;
+
+  if (item.can_shape === 'cylinder') {
+    const diameter = Number(item.can_diameter_cm || item.can_length_cm || item.can_width_cm || 0) / 100;
+    if (!(diameter > 0)) return null;
+    return { width: diameter, height, depth: diameter };
+  }
+
+  const width = Number(item.can_length_cm || item.can_width_cm || item.can_depth_cm || 0) / 100;
+  const depth = Number(item.can_width_cm || item.can_depth_cm || item.can_length_cm || 0) / 100;
+  if (!(width > 0) || !(depth > 0)) return null;
+  return { width, height, depth };
+}
+
+function buildOrderVisualizationPayload(order, groupedItems) {
+  const clients = {};
+
+  groupedItems.forEach((clientGroup, index) => {
+    const key = `pedido-${order.id}-cliente-${index + 1}`;
+    const items = clientGroup.items
+      .map((item) => {
+        const dimensions = getOrderItemVisualizationDimensions(item);
+        if (!dimensions) return null;
+        return {
+          name: item.can_name,
+          dimensions: [dimensions.width, dimensions.height, dimensions.depth],
+          quantity: Math.max(0, Number(item.quantity || 0))
+        };
+      })
+      .filter(Boolean);
+
+    if (items.length) {
+      clients[key] = {
+        name: clientGroup.clientName,
+        items
+      };
+    }
+  });
+
+  return {
+    orderId: order.id,
+    title: `Pedido #${order.id}`,
+    clients
+  };
+}
+
+function buildCurrentLoadVisualizationPayload() {
+  const groupedClients = new Map();
+
+  state.cargoItems.forEach((row) => {
+    const can = state.cans.find((entry) => entry.id === row.canId);
+    if (!can) return;
+
+    const dimensions = getCanPackingDimensions(can);
+    if (!(dimensions.width > 0) || !(dimensions.height > 0) || !(dimensions.depth > 0)) {
+      return;
+    }
+
+    const clientName = String(row.clientName || 'Pedido sem cliente').trim() || 'Pedido sem cliente';
+    if (!groupedClients.has(clientName)) {
+      groupedClients.set(clientName, []);
+    }
+
+    groupedClients.get(clientName).push({
+      name: can.name,
+      dimensions: [dimensions.width, dimensions.height, dimensions.depth],
+      quantity: Math.max(0, Number(row.quantity || 0))
+    });
+  });
+
+  const clients = {};
+  let index = 0;
+  groupedClients.forEach((items, clientName) => {
+    if (!items.length) return;
+    const key = `carga-atual-cliente-${index + 1}`;
+    clients[key] = {
+      name: clientName,
+      items
+    };
+    index += 1;
+  });
+
+  return {
+    title: 'Carga atual',
+    clients
+  };
+}
+
+function prepareSavedOrder3DPreview(order, groupedItems) {
+  const payload = buildOrderVisualizationPayload(order, groupedItems);
+  if (!Object.keys(payload.clients).length) {
+    showToast('Esse pedido não possui dados suficientes para gerar o 3D.');
+    return null;
+  }
+
+  try {
+    window.localStorage.setItem(ORDER_PREVIEW_STORAGE_KEY, JSON.stringify(payload));
+  } catch (_error) {
+    showToast('Não foi possível preparar a visualização 3D do pedido.');
+    return null;
+  }
+  return `/visualizacao_3d_nova.html?preview=order&embed=1&t=${Date.now()}`;
+}
+
+function prepareCurrentLoad3DPreview() {
+  const payload = buildCurrentLoadVisualizationPayload();
+  if (!Object.keys(payload.clients).length) {
+    showToast('Adicione itens válidos para gerar a visualização 3D.');
+    return null;
+  }
+
+  try {
+    window.localStorage.setItem(ORDER_PREVIEW_STORAGE_KEY, JSON.stringify(payload));
+  } catch (_error) {
+    showToast('Não foi possível preparar a visualização 3D da carga.');
+    return null;
+  }
+
+  return `/visualizacao_3d_nova.html?preview=current&embed=1&t=${Date.now()}`;
 }
 
 async function openOrderModal(orderId) {
@@ -1455,12 +1926,17 @@ async function openOrderModal(orderId) {
   const modalActions = canManage || state.user?.role === 'admin'
     ? `
       <div class="modal-actions">
+        <button type="button" id="modal-view-order-3d-btn" class="btn btn-secondary">Mostrar 3D do pedido</button>
         ${order.status === 'open' && canManage ? '<button type="button" id="modal-edit-order-btn" class="btn btn-primary">Editar pedido</button>' : ''}
         ${order.status === 'open' && state.user?.role === 'admin' ? '<button type="button" id="modal-conclude-order-btn" class="btn btn-primary">Concluir pedido</button>' : ''}
         ${canManage ? '<button type="button" id="modal-delete-order-btn" class="row-action danger">Excluir pedido</button>' : ''}
       </div>
     `
-    : '';
+    : `
+      <div class="modal-actions">
+        <button type="button" id="modal-view-order-3d-btn" class="btn btn-secondary">Mostrar 3D do pedido</button>
+      </div>
+    `;
 
   entityModalContent.innerHTML = `
     <p><strong>Status:</strong> ${order.status === 'completed' ? 'Concluído' : 'Aberto'}</p>
@@ -1472,6 +1948,17 @@ async function openOrderModal(orderId) {
     <p><strong>Caminhões reservados:</strong></p>
     ${trucksHtml}
     ${completionInfo}
+    ${modalActions}
+    <section id="modal-order-3d-preview" class="launch-preview-card modal-order-preview hidden">
+      <div class="cargo-preview-head">
+        <div>
+          <span class="eyebrow">Apoio Visual</span>
+          <h4>Previa 3D da carga do pedido</h4>
+        </div>
+      </div>
+      <p class="cargo-preview-helper">Visualização do pedido salvo no mesmo layout da etapa final.</p>
+      <iframe id="modal-order-3d-iframe" class="modal-order-3d-iframe" title="Prévia 3D do pedido" loading="lazy"></iframe>
+    </section>
     <table>
       <thead>
         <tr>
@@ -1484,10 +1971,30 @@ async function openOrderModal(orderId) {
       </thead>
       <tbody>${itemsRows || '<tr><td colspan="5">Sem itens.</td></tr>'}</tbody>
     </table>
-    ${modalActions}
   `;
 
+  entityModalCard?.classList.add('modal-card-order');
   entityModalOverlay.classList.remove('hidden');
+
+  const preview3DBtn = document.getElementById('modal-view-order-3d-btn');
+  const previewSection = document.getElementById('modal-order-3d-preview');
+  const previewIframe = document.getElementById('modal-order-3d-iframe');
+  if (preview3DBtn) {
+    preview3DBtn.addEventListener('click', () => {
+      if (!previewSection || !previewIframe) return;
+      if (previewSection.classList.contains('hidden')) {
+        const previewUrl = prepareSavedOrder3DPreview(order, items);
+        if (!previewUrl) return;
+        previewIframe.src = previewUrl;
+        previewSection.classList.remove('hidden');
+        preview3DBtn.textContent = 'Ocultar 3D do pedido';
+      } else {
+        previewSection.classList.add('hidden');
+        previewIframe.src = 'about:blank';
+        preview3DBtn.textContent = 'Mostrar 3D do pedido';
+      }
+    });
+  }
 
   const editBtn = document.getElementById('modal-edit-order-btn');
   if (editBtn) {
@@ -1732,6 +2239,17 @@ function openCanModal(canId) {
       <label>Nome
         <input name="name" value="${escapeHtml(can.name)}" required />
       </label>
+      <label>Categoria
+        <select name="categoryId">
+          <option value="">Sem categoria</option>
+          ${state.categories
+            .map((category) => {
+              const selected = Number(can.category_id) === Number(category.id) ? 'selected' : '';
+              return `<option value="${category.id}" ${selected}>${escapeHtml(category.name)}</option>`;
+            })
+            .join('')}
+        </select>
+      </label>
       <label>Formato
         <select name="shape" id="modal-can-shape">
           <option value="square" ${can.shape === 'square' ? 'selected' : ''}>Lata Quadrada</option>
@@ -1747,8 +2265,8 @@ function openCanModal(canId) {
       <label class="modal-shape-square">Lado 2 (cm)
         <input name="side2Cm" type="number" min="0.1" step="0.1" value="${can.width_cm ?? ''}" />
       </label>
-      <label class="modal-shape-cylinder">Diametro (cm)
-        <input name="diameterCm" type="number" min="0.1" step="0.1" value="${can.diameter_cm ?? ''}" />
+      <label class="modal-shape-cylinder">Circunferência (cm)
+        <input name="circumferenceCm" type="number" min="0.1" step="0.1" value="${diameterToCircumference(can.diameter_cm)}" />
       </label>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">Salvar alterações</button>
@@ -1768,11 +2286,12 @@ function openCanModal(canId) {
     const formData = new FormData(form);
     const payload = {
       name: String(formData.get('name') || '').trim(),
+      categoryId: formData.get('categoryId') ? Number(formData.get('categoryId')) : null,
       shape: String(formData.get('shape') || ''),
       heightCm: Number(formData.get('heightCm')),
       side1Cm: Number(formData.get('side1Cm')),
       side2Cm: Number(formData.get('side2Cm')),
-      diameterCm: Number(formData.get('diameterCm'))
+      circumferenceCm: Number(formData.get('circumferenceCm'))
     };
 
     const response = await api(`/api/cans/${can.id}`, { method: 'PUT', body: payload });
@@ -1782,9 +2301,9 @@ function openCanModal(canId) {
     }
 
     showToast('Lata atualizada.');
+    closeEntityModal();
     await loadData();
     renderApp();
-    openCanModal(can.id);
   });
 
   deleteBtn.addEventListener('click', async () => {
@@ -1981,6 +2500,7 @@ function syncModalCanShapeFields(shape) {
 function closeEntityModal() {
   entityModalOverlay.classList.add('hidden');
   entityModalContent.innerHTML = '';
+  entityModalCard?.classList.remove('modal-card-order');
   state.modal = null;
 }
 
@@ -2081,7 +2601,7 @@ async function onCreateCan(event) {
     heightCm: Number(form.get('heightCm')),
     side1Cm: Number(form.get('side1Cm')),
     side2Cm: Number(form.get('side2Cm')),
-    diameterCm: Number(form.get('diameterCm'))
+    circumferenceCm: Number(form.get('circumferenceCm'))
   };
 
   const response = await api('/api/cans', { method: 'POST', body: payload });
@@ -2144,6 +2664,12 @@ function updateProgress(currentStep) {
   }
 }
 
+function diameterToCircumference(diameterCm) {
+  const diameter = Number(diameterCm || 0);
+  if (!(diameter > 0)) return '';
+  return (Math.PI * diameter).toFixed(1);
+}
+
 function onSelectedClientChange() {
   const selectedValue = selectedClient.value;
   
@@ -2151,6 +2677,7 @@ function onSelectedClientChange() {
     // Mostrar campo para criar novo cliente
     newClientLabel.style.display = 'block';
     newClientInput.required = true;
+    clientSelectionSection.style.display = '';
     itemsSection.style.display = 'none';
     launchSection.style.display = 'none';
     state.selectedClientId = null;
@@ -2159,6 +2686,7 @@ function onSelectedClientChange() {
     // Selecionar cliente existente
     const selectedClientObj = state.clients.find(c => c.id == selectedValue);
     newClientLabel.style.display = 'none';
+    clientSelectionSection.style.display = '';
     itemsSection.style.display = 'block';
     launchSection.style.display = 'none';
     state.selectedClientId = Number(selectedValue);
@@ -2171,6 +2699,7 @@ function onSelectedClientChange() {
   } else {
     // Limpar seleção - mas manter itens existentes
     newClientLabel.style.display = 'none';
+    clientSelectionSection.style.display = '';
     itemsSection.style.display = 'block';
     launchSection.style.display = 'none';
     state.selectedClientId = null;
@@ -2218,15 +2747,39 @@ function onAddMoreClients() {
 }
 
 function onFinishClients() {
-  // Mostrar seção de lançamento
   if (state.cargoItems.length > 0) {
+    const orderRange = getSelectedOrderRange(true);
+    if (!orderRange) return;
+    if (!state.lastCalculation) {
+      showToast('Calcule a carga antes de avançar para o resumo.');
+      return;
+    }
+    const currentSignature = buildCargoSignature(state.cargoItems);
+    if (
+      state.lastCalculation.startDate !== orderRange.startDate ||
+      state.lastCalculation.endDate !== orderRange.endDate ||
+      state.lastCalculation.cargoSignature !== currentSignature
+    ) {
+      showToast('A carga mudou. Recalcule antes de avançar para o resumo.');
+      return;
+    }
+
+    renderLaunchReviewSummary();
+    clientSelectionSection.style.display = 'none';
     launchSection.style.display = 'block';
+    itemsSection.style.display = 'none';
     updateProgress('launch');
-    currentClientName.textContent = 'Todos os Clientes';
-    showToast('Todos os clientes adicionados. Configure datas e caminhões.');
+    showToast('Carga pronta. Revise o resumo do pedido antes de lançar.');
   } else {
     showToast('Adicione pelo menos um item antes de finalizar.');
   }
+}
+
+function onBackToItems() {
+  launchSection.style.display = 'none';
+  clientSelectionSection.style.display = '';
+  itemsSection.style.display = 'block';
+  updateProgress('items');
 }
 
 function onOpenClientModal() {
@@ -2383,12 +2936,7 @@ async function onAddCargoItem(event) {
   resultBox.classList.add('hidden');
   manualResultBox.classList.add('hidden');
   renderCargoBuilder();
-  
-  // Mostrar seção de lançamento se tiver itens
-  if (state.cargoItems.length > 0) {
-    launchSection.style.display = 'block';
-    updateProgress('launch');
-  }
+  updateProgress('items');
 }
 
 async function onCalculateAutomatic() {
@@ -2412,9 +2960,11 @@ async function onCalculateAutomatic() {
     return;
   }
 
+  attachSpatialValidationToPayload(response.data);
   resultBox.classList.remove('hidden');
   renderCalculationResult(resultBox, response.data, 'automatic');
   storeLastCalculation(response.data, orderRange);
+  renderLaunchReviewSummary();
 }
 
 async function onManualSingleSimulation(event) {
@@ -2452,9 +3002,11 @@ async function onManualSingleSimulation(event) {
     return;
   }
 
+  attachSpatialValidationToPayload(response.data);
   manualResultBox.classList.remove('hidden');
   renderCalculationResult(manualResultBox, response.data, 'manual');
   storeLastCalculation(response.data, orderRange);
+  renderLaunchReviewSummary();
 }
 
 async function onManualMultiSimulation() {
@@ -2493,9 +3045,11 @@ async function onManualMultiSimulation() {
     return;
   }
 
+  attachSpatialValidationToPayload(response.data);
   manualResultBox.classList.remove('hidden');
   renderCalculationResult(manualResultBox, response.data, 'manual');
   storeLastCalculation(response.data, orderRange);
+  renderLaunchReviewSummary();
 }
 
 function sanitizeManualSelections() {
@@ -2794,7 +3348,8 @@ function storeLastCalculation(payload, orderRange) {
     startDate: orderRange.startDate,
     endDate: orderRange.endDate,
     cargoSignature: buildCargoSignature(state.cargoItems),
-    allocation
+    allocation,
+    spatialValidation: payload?.spatialValidation || null
   };
 }
 
@@ -2825,6 +3380,8 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
     targetBox.innerHTML = `<strong>Falha:</strong> Resultado de cálculo inválido.`;
     return;
   }
+  const spatialValidation = payload?.spatialValidation || null;
+  const hasSpatialIssue = spatialValidation?.checked && !spatialValidation.fits;
 
   const title =
     sourceMode === 'automatic'
@@ -2841,13 +3398,17 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
     })
     .join('');
 
-  const statusLine = allocation.fits
-    ? `<p><strong>Status:</strong> Carga comportada.</p>`
-    : `<p><strong>Status:</strong> Espaço insuficiente.</p>`;
+  const statusLine = hasSpatialIssue
+    ? `<p><strong>Status:</strong> O volume comporta a carga, mas a distribuição 3D deixou itens de fora.</p>`
+    : allocation.fits
+      ? `<p><strong>Status:</strong> Carga comportada.</p>`
+      : `<p><strong>Status:</strong> Espaço insuficiente.</p>`;
 
-  const trailing = allocation.fits
-    ? `<p><strong>Sobra de espaço:</strong> ${formatVolume(allocation.leftoverCm3)}</p>`
-    : `<p><strong>Carga que ficaria de fora:</strong> ${formatVolume(allocation.missingCm3)}</p>`;
+  const trailing = hasSpatialIssue
+    ? `<p><strong>Validação 3D:</strong> ${spatialValidation.placedCount}/${spatialValidation.totalCount} volumes acomodados em ${escapeHtml(spatialValidation.truckName)}. ${spatialValidation.missingCount} volume(s) ficaram de fora.</p>`
+    : allocation.fits
+      ? `<p><strong>Sobra de espaço:</strong> ${formatVolume(allocation.leftoverCm3)}</p>`
+      : `<p><strong>Carga que ficaria de fora:</strong> ${formatVolume(allocation.missingCm3)}</p>`;
 
   const range = {
     startDate: payload?.startDate || getSelectedOrderRange(false)?.startDate || null,
@@ -2874,6 +3435,11 @@ function renderCalculationResult(targetBox, payload, sourceMode) {
     ${statusLine}
     ${trailing}
     <p><strong>Ocupação:</strong> ${((allocation.occupancyRate || 0) * 100).toFixed(2)}%</p>
+    ${hasSpatialIssue ? `
+      <div class="logistic-analysis" style="margin-top: 16px; padding: 12px 14px; border: 2px solid #f0b429; border-radius: 8px; background: #fff8db;">
+        <strong style="color: var(--brand-black)">Aviso:</strong> a análise volumétrica aprovou a carga, mas o empacotador 3D não conseguiu acomodar todos os volumes no caminhão selecionado.
+      </div>
+    ` : ''}
     
     ${payload.logisticAnalysis ? `
       <div class="logistic-analysis" style="margin-top: 20px; padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; background: #f8f9fa;">
@@ -2899,6 +3465,7 @@ function buildCurrentLoadSummaryFromClient() {
   if (!state.cargoItems.length) return null;
 
   let totalVolumeCm3 = 0;
+  let totalEffectiveVolumeCm3 = 0;
   let totalCans = 0;
   const breakdown = [];
 
@@ -2907,8 +3474,17 @@ function buildCurrentLoadSummaryFromClient() {
     if (!can) continue;
 
     const quantity = Number(item.quantity);
-    const subtotal = Number(can.volume_cm3) * quantity;
-    totalVolumeCm3 += subtotal;
+    const nominalSubtotal = Number(can.volume_cm3) * quantity;
+    const packingDimensions = getCanPackingDimensions(can);
+    const effectiveUnitVolumeCm3 =
+      Number(packingDimensions.width || 0) *
+      Number(packingDimensions.height || 0) *
+      Number(packingDimensions.depth || 0) *
+      1000000;
+    const effectiveSubtotal = effectiveUnitVolumeCm3 * quantity;
+
+    totalVolumeCm3 += nominalSubtotal;
+    totalEffectiveVolumeCm3 += effectiveSubtotal;
     totalCans += quantity;
 
     breakdown.push({
@@ -2916,29 +3492,32 @@ function buildCurrentLoadSummaryFromClient() {
       canName: can.name,
       quantity,
       unitVolumeCm3: Number(can.volume_cm3),
-      totalVolumeCm3: subtotal
+      totalVolumeCm3: nominalSubtotal,
+      effectiveVolumeCm3: effectiveSubtotal
     });
   }
 
   if (!(totalVolumeCm3 > 0)) return null;
-  return { totalVolumeCm3, totalCans, breakdown };
+  return { totalVolumeCm3, totalEffectiveVolumeCm3, totalCans, breakdown };
 }
 
 function buildAutomaticPayloadFromClient() {
   const summary = buildCurrentLoadSummaryFromClient();
   if (!summary || !state.trucks.length) return null;
+  const requiredVolumeCm3 = summary.totalEffectiveVolumeCm3 || summary.totalVolumeCm3;
 
   const sortedAsc = [...state.trucks].sort((a, b) => Number(a.volume_cm3) - Number(b.volume_cm3));
-  const single = sortedAsc.find((truck) => Number(truck.volume_cm3) >= summary.totalVolumeCm3);
+  const single = sortedAsc.find((truck) => Number(truck.volume_cm3) >= requiredVolumeCm3);
 
   if (single) {
     return {
       mode: 'automatic',
       strategy: 'single',
       totalVolumeCm3: summary.totalVolumeCm3,
+      totalEffectiveVolumeCm3: summary.totalEffectiveVolumeCm3,
       totalCans: summary.totalCans,
       breakdown: summary.breakdown,
-      allocation: buildClientAllocation(summary.totalVolumeCm3, [
+      allocation: buildClientAllocation(requiredVolumeCm3, [
         {
           truckId: single.id,
           name: single.name,
@@ -2956,15 +3535,17 @@ function buildAutomaticPayloadFromClient() {
     mode: 'automatic',
     strategy: 'multi',
     totalVolumeCm3: summary.totalVolumeCm3,
+    totalEffectiveVolumeCm3: summary.totalEffectiveVolumeCm3,
     totalCans: summary.totalCans,
     breakdown: summary.breakdown,
-    allocation: buildClientAllocation(summary.totalVolumeCm3, fleet)
+    allocation: buildClientAllocation(requiredVolumeCm3, fleet)
   };
 }
 
 function buildManualSinglePayloadFromClient(truckId) {
   const summary = buildCurrentLoadSummaryFromClient();
   if (!summary) return null;
+  const requiredVolumeCm3 = summary.totalEffectiveVolumeCm3 || summary.totalVolumeCm3;
 
   const truck = state.trucks.find((entry) => entry.id === truckId);
   if (!truck) return null;
@@ -2973,9 +3554,10 @@ function buildManualSinglePayloadFromClient(truckId) {
     mode: 'manual',
     strategy: 'single',
     totalVolumeCm3: summary.totalVolumeCm3,
+    totalEffectiveVolumeCm3: summary.totalEffectiveVolumeCm3,
     totalCans: summary.totalCans,
     breakdown: summary.breakdown,
-    allocation: buildClientAllocation(summary.totalVolumeCm3, [
+    allocation: buildClientAllocation(requiredVolumeCm3, [
       {
         truckId: truck.id,
         name: truck.name,
@@ -2989,6 +3571,7 @@ function buildManualSinglePayloadFromClient(truckId) {
 function buildManualMultiPayloadFromClient(rawAllocations) {
   const summary = buildCurrentLoadSummaryFromClient();
   if (!summary) return null;
+  const requiredVolumeCm3 = summary.totalEffectiveVolumeCm3 || summary.totalVolumeCm3;
 
   const grouped = new Map();
   for (const row of rawAllocations) {
@@ -3010,9 +3593,10 @@ function buildManualMultiPayloadFromClient(rawAllocations) {
     mode: 'manual',
     strategy: 'multi',
     totalVolumeCm3: summary.totalVolumeCm3,
+    totalEffectiveVolumeCm3: summary.totalEffectiveVolumeCm3,
     totalCans: summary.totalCans,
     breakdown: summary.breakdown,
-    allocation: buildClientAllocation(summary.totalVolumeCm3, allocations)
+    allocation: buildClientAllocation(requiredVolumeCm3, allocations)
   };
 }
 
@@ -3145,7 +3729,7 @@ function formatCanDimensions(can) {
     return `Alt ${can.height_cm} | Lado 1 ${can.length_cm} | Lado 2 ${can.width_cm} cm`;
   }
 
-  return `Alt ${can.height_cm} | Diam ${can.diameter_cm} cm`;
+  return `Alt ${can.height_cm} | Circ ${diameterToCircumference(can.diameter_cm)} cm`;
 }
 
 function buildTruckAvailabilityLookup(items) {
@@ -3258,9 +3842,20 @@ function normalizeText(value) {
 }
 
 async function api(url, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  const headers = { ...(options.headers || {}) };
+
+  if (options.body !== undefined && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  if (state.csrfToken && !['GET', 'HEAD'].includes(method)) {
+    headers['X-CSRF-Token'] = state.csrfToken;
+  }
+
   const response = await fetch(url, {
-    method: options.method || 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    method,
+    headers,
     credentials: 'include',
     body: options.body ? JSON.stringify(options.body) : undefined
   });
@@ -3270,6 +3865,10 @@ async function api(url, options = {}) {
     data = await response.json();
   } catch {
     data = {};
+  }
+
+  if (response.status === 401) {
+    state.csrfToken = null;
   }
 
   return { ok: response.ok, status: response.status, data };
@@ -3293,284 +3892,774 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-// Variáveis globais para visualização 3D
-let scene3D, camera3D, renderer3D;
-let truckMesh3D, itemsGroup3D;
-let mouseX = 0, mouseY = 0;
-let targetRotationX = 0, targetRotationY = 0;
-let currentRotationX = 0, currentRotationY = 0;
+const ORDER_PREVIEW_STORAGE_KEY = 'granilha_metric_order_3d_preview';
+
 let isVisualization3DVisible = false;
+let truckDimensions3D = { length: 14.5, width: 2.45, height: 1.70, name: 'Caminhão padrão' };
+let packingMetrics3D = null;
 
-// Cores simples para cada tipo de embalagem
-const PACKAGE_COLORS = {
-    'Balde 25kg': 0xff6b6b,      // vermelho
-    'Balde 18L': 0x4ecdc4,       // ciano
-    'Galão 3.6L': 0x45b7d1,      // azul
-    'Galão 3.2L': 0x96ceb4,      // azul claro
-    'Lata Solvente 5L': 0xbb8fce, // azul bebê
-    'Lata 18L': 0xa8e6cf,       // verde claro
-    'Barrica 25kg': 0xffe66d,     // amarelo
-    'Tambor 200L': 0xff6f61,     // laranja
-    'Container': 0x88d8b0,       // verde
-    'default': 0x95a5a6           // cinza
-};
+// Cores fixas por pedido/cliente na visualização 3D
+const ORDER_COLOR_PALETTE = [
+    0xff6b6b,
+    0x4ecdc4,
+    0x45b7d1,
+    0xf7b267,
+    0x7d8cff,
+    0x96ceb4,
+    0xffe66d,
+    0xbb8fce,
+    0xf25f5c,
+    0x70c1b3
+];
 
-// Inicializar visualização 3D
-function initVisualization3D() {
-    const container = document.getElementById('visualization-3d');
-    if (!container) return;
-    
-    // Cena estática
-    scene3D = new THREE.Scene();
-    scene3D.background = new THREE.Color(0xf0f0f0); // fundo branco limpo
+function getOrderColor(orderKey) {
+    const normalizedKey = String(orderKey || 'pedido-sem-nome');
+    let hash = 0;
 
-    // Câmera fixa
-    camera3D = new THREE.PerspectiveCamera(60, container.clientWidth / 400, 0.1, 1000);
-    camera3D.position.set(15, 15, 15); // posição fixa
-    camera3D.lookAt(0, 0, 0);
+    for (let index = 0; index < normalizedKey.length; index++) {
+        hash = ((hash << 5) - hash) + normalizedKey.charCodeAt(index);
+        hash |= 0;
+    }
 
-    // Renderer
-    renderer3D = new THREE.WebGLRenderer({ 
-        antialias: true,
-        alpha: false
-    });
-    renderer3D.setSize(container.clientWidth, 400);
-    container.appendChild(renderer3D.domElement);
-
-    // Iluminação simples e fixa
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-    scene3D.add(ambientLight);
-
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
-    directionalLight.position.set(10, 20, 10);
-    scene3D.add(directionalLight);
-
-    // Chão simples
-    const floorGeometry = new THREE.PlaneGeometry(50, 50);
-    const floorMaterial = new THREE.MeshLambertMaterial({ color: 0xe0e0e0 });
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -0.5;
-    scene3D.add(floor);
-
-    // Caminhão estático
-    createStaticTruck3D();
-
-    // Criar itens estáticos
-    createStaticItems3D();
-
-    // Renderizar apenas uma vez (sem animação)
-    renderer3D.render(scene3D, camera3D);
+    return ORDER_COLOR_PALETTE[Math.abs(hash) % ORDER_COLOR_PALETTE.length];
 }
 
-function createStaticTruck3D() {
-    const truckLength = 14.5;
-    const truckWidth = 2.45;
-    const truckHeight = 1.70;
+function resolveVisualizationTruckConfigFromAllocation(allocation) {
+    const candidateTruckIds = [];
 
-    truckMesh3D = new THREE.Group();
+    if (Array.isArray(allocation?.trucks)) {
+        allocation.trucks.forEach((entry) => {
+            const truckId = Number(entry?.truckId);
+            if (Number.isInteger(truckId)) {
+                candidateTruckIds.push(truckId);
+            }
+        });
+    }
 
-    // Chão do caminhão
-    const floorGeometry = new THREE.BoxGeometry(truckLength, 0.2, truckWidth);
-    const floorMaterial = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.position.y = 0;
-    truckMesh3D.add(floor);
+    const bestTruckId = Number(state.lastCalculation?.bestTruck?.id);
+    if (Number.isInteger(bestTruckId)) {
+        candidateTruckIds.unshift(bestTruckId);
+    }
 
-    // Paredes do caminhão (linhas simples)
-    const lineMaterial = new THREE.LineBasicMaterial({ color: 0x666666, linewidth: 2 });
+    const resolvedTruck = [...new Set(candidateTruckIds)]
+        .map((truckId) => state.trucks.find((truck) => truck.id === truckId))
+        .filter(Boolean)
+        .sort((a, b) => Number(b.volume_cm3 || 0) - Number(a.volume_cm3 || 0))[0]
+        || [...state.trucks].sort((a, b) => Number(b.volume_cm3 || 0) - Number(a.volume_cm3 || 0))[0];
 
-    // Criar linhas das bordas
-    const edges = [
-        // Frente
-        new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(-truckLength/2, 0, -truckWidth/2),
-            new THREE.Vector3(-truckLength/2, truckHeight, -truckWidth/2)
-        ]),
-        // Trás
-        new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(truckLength/2, 0, -truckWidth/2),
-            new THREE.Vector3(truckLength/2, truckHeight, -truckWidth/2)
-        ]),
-        // Esquerda
-        new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(-truckLength/2, 0, -truckWidth/2),
-            new THREE.Vector3(truckLength/2, truckHeight, -truckWidth/2)
-        ]),
-        // Direita
-        new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(-truckLength/2, 0, truckWidth/2),
-            new THREE.Vector3(truckLength/2, truckHeight, truckWidth/2)
-        ])
-    ];
+    if (!resolvedTruck) {
+        return { name: 'Caminhão padrão', length: 14.5, width: 2.45, height: 1.70 };
+    }
 
-    edges.forEach(edge => {
-        const line = new THREE.Line(edge, lineMaterial);
-        truckMesh3D.add(line);
-    });
-
-    // Grupo para itens
-    itemsGroup3D = new THREE.Group();
-    truckMesh3D.add(itemsGroup3D);
-
-    scene3D.add(truckMesh3D);
+    return {
+        name: resolvedTruck.name || 'Caminhão',
+        length: Number(resolvedTruck.length_cm || 1450) / 100,
+        width: Number(resolvedTruck.width_cm || 245) / 100,
+        height: Number(resolvedTruck.height_cm || 170) / 100,
+        truckId: Number(resolvedTruck.id || 0) || null
+    };
 }
 
-function createStaticItems3D() {
-    if (!state.cargoItems.length) return;
+function syncVisualizationTruckMetrics() {
+    const floorY = Math.min(0.015, truckDimensions3D.height * 0.04);
+    packingMetrics3D = {
+        gap: 0.002,
+        orderGap: 0.015,
+        positionEpsilon: 0.0015,
+        floorY,
+        minX: -truckDimensions3D.length / 2 + 0.008,
+        rearX: truckDimensions3D.length / 2 - 0.008,
+        minZ: -truckDimensions3D.width / 2 + 0.008,
+        maxZ: truckDimensions3D.width / 2 - 0.008,
+        usableHeight: truckDimensions3D.height - floorY * 2
+    };
+}
 
-    // Agrupar itens iguais por tipo
-    const groupedItems = {};
-    state.cargoItems.forEach(item => {
-        const can = state.cans.find(c => c.id === item.canId);
+function getCanPackingDimensions(can) {
+    const height = Number(can.height_cm || 0) / 100;
+
+    if (can.shape === 'cylinder') {
+        const diameter = Number(can.diameter_cm || can.length_cm || can.width_cm || 0) / 100;
+        return { width: diameter, height, depth: diameter };
+    }
+
+    return {
+        width: Number(can.length_cm || can.width_cm || 0) / 100,
+        height,
+        depth: Number(can.width_cm || can.length_cm || 0) / 100
+    };
+}
+
+function buildVisualizationItems() {
+    const items = [];
+
+    state.cargoItems.forEach((row) => {
+        const can = state.cans.find((entry) => entry.id === row.canId);
         if (!can) return;
-        
-        const key = can.name;
-        if (!groupedItems[key]) {
-            groupedItems[key] = {
-                can: can,
-                totalQuantity: 0,
-                color: PACKAGE_COLORS[can.name] || PACKAGE_COLORS['default']
+
+        const dimensions = getCanPackingDimensions(can);
+        if (!(dimensions.width > 0) || !(dimensions.height > 0) || !(dimensions.depth > 0)) {
+            return;
+        }
+
+        const quantity = Math.max(0, Number(row.quantity || 0));
+        const clientName = String(row.clientName || 'Pedido sem cliente').trim() || 'Pedido sem cliente';
+        const color = getOrderColor(clientName);
+        const actualVolume = Number(can.volume_cm3 || 0) / 1000000;
+
+        for (let index = 0; index < quantity; index++) {
+            items.push({
+                name: can.name,
+                clientKey: clientName,
+                clientName,
+                color,
+                dimensions: [dimensions.width, dimensions.height, dimensions.depth],
+                actualVolume
+            });
+        }
+    });
+
+    return items;
+}
+
+function buildVisualizationGroups(items, clientKey) {
+    const groups = new Map();
+
+    items
+        .filter((item) => item.clientKey === clientKey)
+        .forEach((item) => {
+            const key = `${item.name}:${item.dimensions.join('x')}`;
+            if (!groups.has(key)) {
+                const [width, height, depth] = item.dimensions;
+                groups.set(key, {
+                    key,
+                    clientKey,
+                    clientName: item.clientName,
+                    color: item.color,
+                    name: item.name,
+                    itemWidth: width,
+                    itemHeight: height,
+                    itemDepth: depth,
+                    footprint: width * depth,
+                    volume: width * height * depth,
+                    items: []
+                });
+            }
+            groups.get(key).items.push(item);
+        });
+
+    return Array.from(groups.values()).sort((a, b) => {
+        return b.footprint - a.footprint ||
+            b.volume - a.volume ||
+            b.itemHeight - a.itemHeight ||
+            b.items.length - a.items.length;
+    });
+}
+
+function buildVisualizationBlocks(items) {
+    const clientKeys = [...new Set(items.map((item) => item.clientKey))];
+    return clientKeys
+        .map((clientKey) => {
+            const groups = buildVisualizationGroups(items, clientKey);
+            const totalItems = groups.reduce((sum, group) => sum + group.items.length, 0);
+            const totalVolume = groups.reduce((sum, group) => sum + group.volume * group.items.length, 0);
+            const weightedFootprint = groups.reduce((sum, group) => sum + (group.footprint * group.items.length), 0);
+            const maxFootprint = groups.reduce((maxValue, group) => Math.max(maxValue, group.footprint), 0);
+            const minFloorSpan = groups.reduce((minValue, group) => {
+                return Math.min(minValue, Math.min(group.itemWidth, group.itemDepth));
+            }, Number.POSITIVE_INFINITY);
+            const maxGroupWidth = groups.reduce((maxValue, group) => Math.max(maxValue, group.itemWidth), 0);
+
+            return {
+                clientKey,
+                clientName: clientKey,
+                groups,
+                totalVolume,
+                averageFootprint: totalItems ? weightedFootprint / totalItems : 0,
+                maxFootprint,
+                minFloorSpan: Number.isFinite(minFloorSpan) ? minFloorSpan : 0,
+                maxGroupWidth,
+                minimalLength: Math.max(
+                    maxGroupWidth + packingMetrics3D.gap * 2,
+                    totalVolume / Math.max((packingMetrics3D.maxZ - packingMetrics3D.minZ) * packingMetrics3D.usableHeight, packingMetrics3D.positionEpsilon)
+                )
             };
+        });
+}
+
+function getVisualizationOrientations(width, height, depth) {
+    return [
+        { width, height, depth, rotated: false },
+        { width: depth, height, depth: width, rotated: true }
+    ].filter((orientation, index, list) => {
+        return index === list.findIndex((candidate) =>
+            Math.abs(candidate.width - orientation.width) <= packingMetrics3D.positionEpsilon &&
+            Math.abs(candidate.depth - orientation.depth) <= packingMetrics3D.positionEpsilon
+        );
+    });
+}
+
+function scoreVisualizationLayout(layout, minFloorSpan) {
+    const fragments = layout.map((slot) => ({
+        area: (slot.xMax - slot.xMin) * (slot.zMax - slot.zMin),
+        minSpan: Math.min(slot.xMax - slot.xMin, slot.zMax - slot.zMin)
+    }));
+
+    return {
+        unusableCount: fragments.filter((fragment) => fragment.minSpan < minFloorSpan - packingMetrics3D.positionEpsilon).length,
+        maxSpan: fragments.reduce((value, fragment) => Math.max(value, fragment.minSpan), 0),
+        maxArea: fragments.reduce((value, fragment) => Math.max(value, fragment.area), 0)
+    };
+}
+
+function chooseBestVisualizationRemainder(layouts, minFloorSpan) {
+    return layouts.reduce((bestLayout, currentLayout) => {
+        if (!bestLayout) return currentLayout;
+
+        const bestScore = scoreVisualizationLayout(bestLayout, minFloorSpan);
+        const currentScore = scoreVisualizationLayout(currentLayout, minFloorSpan);
+        if (currentScore.unusableCount !== bestScore.unusableCount) {
+            return currentScore.unusableCount < bestScore.unusableCount ? currentLayout : bestLayout;
         }
-        groupedItems[key].totalQuantity += item.quantity;
+        if (Math.abs(currentScore.maxSpan - bestScore.maxSpan) > packingMetrics3D.positionEpsilon) {
+            return currentScore.maxSpan > bestScore.maxSpan ? currentLayout : bestLayout;
+        }
+        return currentScore.maxArea > bestScore.maxArea + packingMetrics3D.positionEpsilon ? currentLayout : bestLayout;
+    }, null) || [];
+}
+
+function getVisualizationAnchors(slot, placement) {
+    const centeredZMin = slot.zMin + Math.max(0, ((slot.zMax - slot.zMin) - placement.depth) / 2);
+    return [slot.zMin, centeredZMin, slot.zMax - placement.depth].filter((anchor, index, list) => {
+        return anchor >= slot.zMin - packingMetrics3D.positionEpsilon &&
+            anchor + placement.depth <= slot.zMax + packingMetrics3D.positionEpsilon &&
+            index === list.findIndex((candidate) => Math.abs(candidate - anchor) <= packingMetrics3D.positionEpsilon);
+    });
+}
+
+function buildVisualizationRemainders(slot, placement, usedZMin) {
+    const usedXMin = slot.xMax - placement.width;
+    const usedZMax = usedZMin + placement.depth;
+
+    const widthFirst = [];
+    if (usedXMin - slot.xMin > packingMetrics3D.positionEpsilon) {
+        widthFirst.push({ xMin: slot.xMin, xMax: usedXMin, zMin: slot.zMin, zMax: slot.zMax, baseY: slot.baseY, stackLevel: slot.stackLevel, groupKey: slot.groupKey });
+    }
+    if (usedZMin - slot.zMin > packingMetrics3D.positionEpsilon) {
+        widthFirst.push({ xMin: usedXMin, xMax: slot.xMax, zMin: slot.zMin, zMax: usedZMin, baseY: slot.baseY, stackLevel: slot.stackLevel, groupKey: slot.groupKey });
+    }
+    if (slot.zMax - usedZMax > packingMetrics3D.positionEpsilon) {
+        widthFirst.push({ xMin: usedXMin, xMax: slot.xMax, zMin: usedZMax, zMax: slot.zMax, baseY: slot.baseY, stackLevel: slot.stackLevel, groupKey: slot.groupKey });
+    }
+
+    const depthFirst = [];
+    if (usedZMin - slot.zMin > packingMetrics3D.positionEpsilon) {
+        depthFirst.push({ xMin: slot.xMin, xMax: slot.xMax, zMin: slot.zMin, zMax: usedZMin, baseY: slot.baseY, stackLevel: slot.stackLevel, groupKey: slot.groupKey });
+    }
+    if (slot.zMax - usedZMax > packingMetrics3D.positionEpsilon) {
+        depthFirst.push({ xMin: slot.xMin, xMax: slot.xMax, zMin: usedZMax, zMax: slot.zMax, baseY: slot.baseY, stackLevel: slot.stackLevel, groupKey: slot.groupKey });
+    }
+    if (usedXMin - slot.xMin > packingMetrics3D.positionEpsilon) {
+        depthFirst.push({ xMin: slot.xMin, xMax: usedXMin, zMin: usedZMin, zMax: usedZMax, baseY: slot.baseY, stackLevel: slot.stackLevel, groupKey: slot.groupKey });
+    }
+
+    return { usedXMin, usedXMax: slot.xMax, usedZMin, usedZMax, layouts: [widthFirst, depthFirst] };
+}
+
+function nearlyEqualVisualization(a, b) {
+    return Math.abs(a - b) <= packingMetrics3D.positionEpsilon;
+}
+
+function rangesTouchVisualization(minA, maxA, minB, maxB) {
+    return Math.abs(maxA - minB) <= packingMetrics3D.positionEpsilon || Math.abs(maxB - minA) <= packingMetrics3D.positionEpsilon;
+}
+
+function buildMergedVisualizationSlot(state, slotIndex) {
+    const seedSlot = state.slots[slotIndex];
+    const consumedIndexes = new Set([slotIndex]);
+    const mergedSlot = {
+        xMin: seedSlot.xMin,
+        xMax: seedSlot.xMax,
+        zMin: seedSlot.zMin,
+        zMax: seedSlot.zMax,
+        baseY: seedSlot.baseY,
+        stackLevel: seedSlot.stackLevel,
+        groupKey: seedSlot.groupKey
+    };
+
+    let changed = true;
+    while (changed) {
+        changed = false;
+
+        for (let index = 0; index < state.slots.length; index++) {
+            if (consumedIndexes.has(index)) continue;
+            const slot = state.slots[index];
+
+            if (!nearlyEqualVisualization(slot.baseY, mergedSlot.baseY) || slot.stackLevel !== mergedSlot.stackLevel) {
+                continue;
+            }
+
+            if (
+                nearlyEqualVisualization(slot.xMin, mergedSlot.xMin) &&
+                nearlyEqualVisualization(slot.xMax, mergedSlot.xMax) &&
+                rangesTouchVisualization(mergedSlot.zMin, mergedSlot.zMax, slot.zMin, slot.zMax)
+            ) {
+                mergedSlot.zMin = Math.min(mergedSlot.zMin, slot.zMin);
+                mergedSlot.zMax = Math.max(mergedSlot.zMax, slot.zMax);
+                consumedIndexes.add(index);
+                changed = true;
+                continue;
+            }
+
+            if (
+                nearlyEqualVisualization(slot.zMin, mergedSlot.zMin) &&
+                nearlyEqualVisualization(slot.zMax, mergedSlot.zMax) &&
+                rangesTouchVisualization(mergedSlot.xMin, mergedSlot.xMax, slot.xMin, slot.xMax)
+            ) {
+                mergedSlot.xMin = Math.min(mergedSlot.xMin, slot.xMin);
+                mergedSlot.xMax = Math.max(mergedSlot.xMax, slot.xMax);
+                consumedIndexes.add(index);
+                changed = true;
+            }
+        }
+    }
+
+    return {
+        slot: mergedSlot,
+        slotIndexes: [...consumedIndexes].sort((a, b) => b - a)
+    };
+}
+
+function previewVisualizationPlacement(slot, entry, maxLayers = Infinity) {
+    if (slot.baseY + entry.itemHeight > truckDimensions3D.height - packingMetrics3D.floorY + packingMetrics3D.positionEpsilon) {
+        return null;
+    }
+
+    const supportWidth = slot.xMax - slot.xMin;
+    const supportDepth = slot.zMax - slot.zMin;
+    let best = null;
+
+    for (const orientation of getVisualizationOrientations(entry.itemWidth, entry.itemHeight, entry.itemDepth)) {
+        if (orientation.width > supportWidth + packingMetrics3D.positionEpsilon || orientation.depth > supportDepth + packingMetrics3D.positionEpsilon) {
+            continue;
+        }
+        if (slot.stackLevel + 1 > maxLayers) {
+            continue;
+        }
+
+        const placement = {
+            width: orientation.width,
+            height: entry.itemHeight,
+            depth: orientation.depth,
+            rotated: orientation.rotated,
+            y: slot.baseY + entry.itemHeight / 2,
+            baseY: slot.baseY,
+            layer: slot.baseY <= packingMetrics3D.floorY + packingMetrics3D.positionEpsilon ? 'fundo_chao' : 'fundo_empilhado',
+            supportArea: supportWidth * supportDepth,
+            wasteArea: supportWidth * supportDepth - orientation.width * orientation.depth,
+            topY: slot.baseY + entry.itemHeight,
+            stackLevel: slot.stackLevel + 1
+        };
+
+        if (!best || placement.wasteArea < best.wasteArea - packingMetrics3D.positionEpsilon) {
+            best = placement;
+        }
+    }
+
+    return best;
+}
+
+function getBestVisualizationAnchor(state, slot, placement) {
+    const anchors = slot.baseY <= packingMetrics3D.floorY + packingMetrics3D.positionEpsilon
+        ? getVisualizationAnchors(slot, placement)
+        : [slot.zMin];
+    let bestAnchor = null;
+
+    anchors.forEach((anchorZMin) => {
+        const layoutCandidate = buildVisualizationRemainders(slot, placement, anchorZMin);
+        const remainderLayout = chooseBestVisualizationRemainder(layoutCandidate.layouts, state.minFloorSpan);
+        const layoutScore = scoreVisualizationLayout(remainderLayout, state.minFloorSpan);
+        const candidate = { ...layoutCandidate, remainders: remainderLayout, layoutScore };
+
+        if (!bestAnchor) {
+            bestAnchor = candidate;
+            return;
+        }
+
+        if (layoutScore.unusableCount !== bestAnchor.layoutScore.unusableCount) {
+            if (layoutScore.unusableCount < bestAnchor.layoutScore.unusableCount) {
+                bestAnchor = candidate;
+            }
+            return;
+        }
+
+        if (Math.abs(layoutScore.maxSpan - bestAnchor.layoutScore.maxSpan) > packingMetrics3D.positionEpsilon) {
+            if (layoutScore.maxSpan > bestAnchor.layoutScore.maxSpan) {
+                bestAnchor = candidate;
+            }
+            return;
+        }
+
+        if (layoutScore.maxArea > bestAnchor.layoutScore.maxArea + packingMetrics3D.positionEpsilon) {
+            bestAnchor = candidate;
+        }
     });
 
-    let totalVolume = 0;
-    let totalRealVolume = 0;
+    return bestAnchor;
+}
 
-    // Posição inicial para empilhamento organizado de blocos
-    let currentX = -6;
-    let currentZ = -1;
-    let currentY = 0.5;
-    let blocksPerRow = 0;
+function isBetterVisualizationFloor(current, best) {
+    if (!best) return true;
+    if (Math.abs(current.slot.xMax - best.slot.xMax) > packingMetrics3D.positionEpsilon) {
+        return current.slot.xMax > best.slot.xMax;
+    }
+    if (current.anchorLayout.layoutScore.unusableCount !== best.anchorLayout.layoutScore.unusableCount) {
+        return current.anchorLayout.layoutScore.unusableCount < best.anchorLayout.layoutScore.unusableCount;
+    }
+    if (Math.abs(current.anchorLayout.layoutScore.maxSpan - best.anchorLayout.layoutScore.maxSpan) > packingMetrics3D.positionEpsilon) {
+        return current.anchorLayout.layoutScore.maxSpan > best.anchorLayout.layoutScore.maxSpan;
+    }
+    if (Math.abs(current.placement.supportArea - best.placement.supportArea) > packingMetrics3D.positionEpsilon) {
+        return current.placement.supportArea > best.placement.supportArea;
+    }
+    return current.placement.wasteArea < best.placement.wasteArea - packingMetrics3D.positionEpsilon;
+}
 
-    // Renderizar cada tipo como um bloco
-    Object.values(groupedItems).forEach((group, index) => {
-        const can = group.can;
-        
-        // Calcular tamanho do bloco baseado na quantidade
-        let blockSize = 1.0;
-        let itemsPerBlock = 1;
-        
-        if (can.name.includes('Balde')) {
-            blockSize = can.name.includes('25kg') ? 2.0 : 1.5;
-            itemsPerBlock = Math.min(group.totalQuantity, 4); // máximo 4 por bloco
-        } else if (can.name.includes('Galão')) {
-            blockSize = can.name.includes('3.6L') ? 1.2 : 1.0;
-            itemsPerBlock = Math.min(group.totalQuantity, 6); // máximo 6 por bloco
-        } else if (can.name.includes('Lata')) {
-            blockSize = 0.8;
-            itemsPerBlock = Math.min(group.totalQuantity, 8); // máximo 8 por bloco
-        } else if (can.name.includes('Barrica')) {
-            blockSize = 1.8;
-            itemsPerBlock = Math.min(group.totalQuantity, 3); // máximo 3 por bloco
-        } else if (can.name.includes('Tambor')) {
-            blockSize = 2.0;
-            itemsPerBlock = Math.min(group.totalQuantity, 2); // máximo 2 por bloco
-        } else if (can.name.includes('Container')) {
-            blockSize = 1.5;
-            itemsPerBlock = Math.min(group.totalQuantity, 2); // máximo 2 por bloco
+function isBetterVisualizationTop(current, best) {
+    if (!best) return true;
+    if (current.placement.stackLevel !== best.placement.stackLevel) {
+        return current.placement.stackLevel < best.placement.stackLevel;
+    }
+    if (Math.abs(current.placement.supportArea - best.placement.supportArea) > packingMetrics3D.positionEpsilon) {
+        return current.placement.supportArea > best.placement.supportArea;
+    }
+    if (Math.abs(current.placement.wasteArea - best.placement.wasteArea) > packingMetrics3D.positionEpsilon) {
+        return current.placement.wasteArea < best.placement.wasteArea;
+    }
+    if (Math.abs(current.placement.topY - best.placement.topY) > packingMetrics3D.positionEpsilon) {
+        return current.placement.topY < best.placement.topY;
+    }
+    return current.sameGroup && !best.sameGroup;
+}
+
+function findBestVisualizationFloor(state, entry) {
+    let best = null;
+    for (let slotIndex = 0; slotIndex < state.slots.length; slotIndex++) {
+        const merged = buildMergedVisualizationSlot(state, slotIndex);
+        const slot = merged.slot;
+        if (slot.baseY > packingMetrics3D.floorY + packingMetrics3D.positionEpsilon) continue;
+        const placement = previewVisualizationPlacement(slot, entry);
+        if (!placement) continue;
+        const candidate = { slotIndexes: merged.slotIndexes, slot, placement, anchorLayout: getBestVisualizationAnchor(state, slot, placement) };
+        if (candidate.anchorLayout && isBetterVisualizationFloor(candidate, best)) {
+            best = candidate;
         }
+    }
+    return best;
+}
 
-        // Calcular quantos blocos deste tipo
-        const totalBlocks = Math.ceil(group.totalQuantity / itemsPerBlock);
-        
-        // Renderizar cada bloco
-        for (let blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
-            const itemsInThisBlock = Math.min(itemsPerBlock, group.totalQuantity - (blockIndex * itemsPerBlock));
-            
-            // Criar geometria do bloco (tamanho proporcional à quantidade)
-            const blockWidth = blockSize * (1 + itemsInThisBlock * 0.1);
-            const blockDepth = blockSize * (1 + itemsInThisBlock * 0.1);
-            const blockHeight = blockSize;
-            
-            const geometry = new THREE.BoxGeometry(blockWidth, blockHeight, blockDepth);
-            const material = new THREE.MeshLambertMaterial({ color: group.color });
-            const blockMesh = new THREE.Mesh(geometry, material);
-            
-            // Posicionar bloco
-            blockMesh.position.set(currentX, currentY, currentZ);
-            
-            // Atualizar posição para próximo bloco
-            currentX += blockWidth + 0.2;
-            blocksPerRow++;
-            
-            if (blocksPerRow >= 3) { // máximo 3 blocos por linha
-                blocksPerRow = 0;
-                currentX = -6;
-                currentZ += blockDepth + 0.2;
-            }
-            
-            if (currentZ > 1) { // nova camada
-                currentZ = -1;
-                currentY += blockHeight + 0.2;
-            }
-            
-            itemsGroup3D.add(blockMesh);
-            
-            // Calcular volumes (bloco inteiro)
-            const blockVolume = blockWidth * blockHeight * blockDepth;
-            totalVolume += blockVolume;
-            totalRealVolume += blockVolume;
+function findBestVisualizationTop(state, entry, maxLayers = Infinity) {
+    let best = null;
+    for (let slotIndex = 0; slotIndex < state.slots.length; slotIndex++) {
+        const merged = buildMergedVisualizationSlot(state, slotIndex);
+        const slot = merged.slot;
+        if (slot.baseY <= packingMetrics3D.floorY + packingMetrics3D.positionEpsilon) continue;
+        const placement = previewVisualizationPlacement(slot, entry, maxLayers);
+        if (!placement) continue;
+        const candidate = {
+            slotIndexes: merged.slotIndexes,
+            slot,
+            placement,
+            anchorLayout: getBestVisualizationAnchor(state, slot, placement),
+            sameGroup: slot.groupKey === entry.groupKey
+        };
+        if (isBetterVisualizationTop(candidate, best)) {
+            best = candidate;
         }
+    }
+    return best;
+}
+
+function placeVisualizationCandidate(state, candidate, groupKey) {
+    const slot = candidate.slot;
+    const slotIndexes = Array.isArray(candidate.slotIndexes) ? candidate.slotIndexes : [];
+    slotIndexes.forEach((index) => {
+        state.slots.splice(index, 1);
+    });
+    const anchor = candidate.anchorLayout || getBestVisualizationAnchor(state, slot, candidate.placement);
+    if (!anchor) return null;
+
+    anchor.remainders.forEach((remainder) => state.slots.push(remainder));
+
+    const nextStackLevel = slot.stackLevel + 1;
+    if (slot.baseY + candidate.placement.height < truckDimensions3D.height - packingMetrics3D.floorY - packingMetrics3D.positionEpsilon) {
+        state.slots.push({
+            xMin: anchor.usedXMin,
+            xMax: anchor.usedXMax,
+            zMin: anchor.usedZMin,
+            zMax: anchor.usedZMax,
+            baseY: slot.baseY + candidate.placement.height,
+            stackLevel: nextStackLevel,
+            groupKey
+        });
+    }
+
+    if (slot.baseY <= packingMetrics3D.floorY + packingMetrics3D.positionEpsilon && slot.groupKey === state.floorGroupKey) {
+        state.currentBlockFrontEdgeX = Math.min(state.currentBlockFrontEdgeX, anchor.usedXMin);
+    }
+
+    return {
+        x: (anchor.usedXMin + anchor.usedXMax) / 2,
+        y: candidate.placement.y,
+        z: (anchor.usedZMin + anchor.usedZMax) / 2,
+        width: candidate.placement.width,
+        height: candidate.placement.height,
+        depth: candidate.placement.depth,
+        rotated: candidate.placement.rotated,
+        layer: candidate.placement.layer,
+        stackLevel: candidate.placement.stackLevel
+    };
+}
+
+function buildVisualizationState(block, rearX, frontX, carriedSlots = []) {
+    const floorGroupKey = `__floor__:${block.clientKey}`;
+    return {
+        currentBlockFrontEdgeX: rearX,
+        minFloorSpan: block.minFloorSpan,
+        largeFootprintThreshold: Math.max(block.averageFootprint * 1.15, block.maxFootprint * 0.55),
+        floorGroupKey,
+        slots: [
+            ...carriedSlots.map((slot) => ({ ...slot })),
+            {
+                xMin: frontX,
+                xMax: rearX,
+                zMin: packingMetrics3D.minZ,
+                zMax: packingMetrics3D.maxZ,
+                baseY: packingMetrics3D.floorY,
+                stackLevel: 0,
+                groupKey: floorGroupKey
+            }
+        ]
+    };
+}
+
+function buildVisualizationEntries(block) {
+    const entries = [];
+    block.groups.forEach((group) => {
+        group.items.forEach((item) => {
+            entries.push({
+                item,
+                groupKey: group.key,
+                itemWidth: group.itemWidth,
+                itemHeight: group.itemHeight,
+                itemDepth: group.itemDepth,
+                footprint: group.footprint,
+                volume: group.volume
+            });
+        });
     });
 
-    // Atualizar estatísticas
-    const efficiency = totalVolume > 0 ? (totalRealVolume / totalVolume) * 100 : 100;
-    const ocupacao = (totalRealVolume / (14.5 * 2.45 * 1.70)) * 100;
+    return entries.sort((a, b) => b.footprint - a.footprint || b.volume - a.volume || b.itemHeight - a.itemHeight);
+}
 
-    document.getElementById('viz-volume-total').textContent = totalVolume.toFixed(3) + ' m³';
-    document.getElementById('viz-volume-real').textContent = totalRealVolume.toFixed(3) + ' m³';
-    document.getElementById('viz-eficiencia').textContent = efficiency.toFixed(1) + '%';
-    document.getElementById('viz-ocupacao').textContent = ocupacao.toFixed(1) + '%';
+function chooseVisualizationPlacement(state, entry, compactMode = false, aggressiveMode = false) {
+    const floorCandidate = findBestVisualizationFloor(state, entry);
+    const topCandidate = findBestVisualizationTop(state, entry, compactMode || aggressiveMode ? Infinity : 4);
+    const isLargeItem = entry.footprint >= state.largeFootprintThreshold - packingMetrics3D.positionEpsilon;
+
+    if (floorCandidate && topCandidate) {
+        if (isLargeItem) {
+            return placeVisualizationCandidate(state, floorCandidate, entry.groupKey);
+        }
+
+        const floorExpandsFront = floorCandidate.anchorLayout.usedXMin < state.currentBlockFrontEdgeX - packingMetrics3D.positionEpsilon;
+        const floorFragmentsBadly = floorCandidate.anchorLayout.layoutScore.unusableCount > 0;
+        const topUsesUpperSpace = topCandidate.placement.supportArea > (entry.itemWidth * entry.itemDepth) + packingMetrics3D.positionEpsilon;
+        const topFillsBroaderBase = topCandidate.placement.supportArea > floorCandidate.placement.supportArea + packingMetrics3D.positionEpsilon;
+
+        if ((aggressiveMode && floorExpandsFront) || (topUsesUpperSpace && (floorExpandsFront || floorFragmentsBadly || topFillsBroaderBase))) {
+            return placeVisualizationCandidate(state, topCandidate, entry.groupKey);
+        }
+
+        return placeVisualizationCandidate(state, floorCandidate, entry.groupKey);
+    }
+
+    return floorCandidate
+        ? placeVisualizationCandidate(state, floorCandidate, entry.groupKey)
+        : topCandidate
+            ? placeVisualizationCandidate(state, topCandidate, entry.groupKey)
+            : null;
+}
+
+function evaluateVisualizationResult(candidate, best) {
+    if (!best) return true;
+    if (candidate.placements.length !== best.placements.length) {
+        return candidate.placements.length > best.placements.length;
+    }
+    if ((candidate.layerStats.fundo_chao || 0) !== (best.layerStats.fundo_chao || 0)) {
+        return (candidate.layerStats.fundo_chao || 0) > (best.layerStats.fundo_chao || 0);
+    }
+    if (candidate.maxStackLevel !== best.maxStackLevel) {
+        return candidate.maxStackLevel < best.maxStackLevel;
+    }
+    return (candidate.layerStats.fundo_empilhado || 0) < (best.layerStats.fundo_empilhado || 0);
+}
+
+function packVisualizationItems(items) {
+    const blocks = buildVisualizationBlocks(items);
+
+    const runPacking = (compactMode = false, aggressiveMode = false) => {
+        const placements = [];
+        const layerStats = { fundo_chao: 0, fundo_empilhado: 0 };
+        let totalEffectiveVolume = 0;
+        let maxStackLevel = 0;
+        let currentRearX = packingMetrics3D.rearX;
+        let carriedTopSlots = [];
+        const orderGap = aggressiveMode ? Math.min(packingMetrics3D.orderGap, 0.005) : compactMode ? Math.min(packingMetrics3D.orderGap, 0.015) : packingMetrics3D.orderGap;
+
+        for (const block of blocks) {
+            const remainingBlocks = blocks.slice(blocks.indexOf(block) + 1);
+            const reserveForRemaining = remainingBlocks.reduce((sum, remainingBlock) => sum + remainingBlock.minimalLength, 0) + orderGap * remainingBlocks.length;
+            const frontLimit = Math.max(
+                packingMetrics3D.minX,
+                currentRearX - Math.max(block.minimalLength, currentRearX - packingMetrics3D.minX - reserveForRemaining)
+            );
+            const state = buildVisualizationState(block, currentRearX, frontLimit, carriedTopSlots);
+            const entries = buildVisualizationEntries(block);
+
+            entries.forEach((entry) => {
+                const position = chooseVisualizationPlacement(state, entry, compactMode, aggressiveMode);
+                if (!position) return;
+
+                placements.push({ item: entry.item, position });
+                totalEffectiveVolume += position.width * position.height * position.depth;
+                layerStats[position.layer] = (layerStats[position.layer] || 0) + 1;
+                maxStackLevel = Math.max(maxStackLevel, position.stackLevel || 0);
+            });
+
+            carriedTopSlots = state.slots
+                .filter((slot) => slot.baseY > packingMetrics3D.floorY + packingMetrics3D.positionEpsilon)
+                .map((slot) => ({ ...slot }));
+
+            currentRearX = state.currentBlockFrontEdgeX - orderGap;
+        }
+
+        return { placements, layerStats, totalEffectiveVolume, maxStackLevel };
+    };
+
+    let best = runPacking(false, false);
+    const compact = runPacking(true, false);
+    if (evaluateVisualizationResult(compact, best)) {
+        best = compact;
+    }
+    const aggressive = runPacking(true, true);
+    if (evaluateVisualizationResult(aggressive, best)) {
+        best = aggressive;
+    }
+
+    return best;
+}
+
+function attachSpatialValidationToPayload(payload) {
+    const allocation = normalizeAllocationFromPayload(payload);
+    if (!allocation) {
+        return payload;
+    }
+
+    const totalTruckUnits = allocation.trucks.reduce((sum, truck) => sum + Number(truck.quantity || 0), 0);
+    if (allocation.trucks.length !== 1 || totalTruckUnits !== 1) {
+        payload.spatialValidation = { checked: false, fits: Boolean(allocation.fits) };
+        return payload;
+    }
+
+    const items = buildVisualizationItems();
+    if (!items.length) {
+        payload.spatialValidation = { checked: false, fits: Boolean(allocation.fits) };
+        return payload;
+    }
+
+    const previousTruckDimensions = { ...truckDimensions3D };
+    const previousMetrics = packingMetrics3D ? { ...packingMetrics3D } : null;
+    const validationTruck = resolveVisualizationTruckConfigFromAllocation(allocation);
+
+    truckDimensions3D = validationTruck;
+    syncVisualizationTruckMetrics();
+    const packingResult = packVisualizationItems(items);
+
+    truckDimensions3D = previousTruckDimensions;
+    packingMetrics3D = previousMetrics;
+
+    const missingCount = Math.max(0, items.length - packingResult.placements.length);
+    payload.spatialValidation = {
+        checked: true,
+        fits: missingCount === 0,
+        placedCount: packingResult.placements.length,
+        totalCount: items.length,
+        missingCount,
+        truckName: validationTruck.name || 'Caminhão'
+    };
+
+    if (missingCount > 0 && payload.allocation) {
+        payload.allocation = {
+            ...payload.allocation,
+            fits: false
+        };
+    }
+
+    return payload;
+}
+
+function syncVisualization3DPanel() {
+    if (!toggle3DBtn || !toggle3DText || !visualization3DHelper || !visualization3DContainer || !launchOrder3DIframe) return;
+
+    const totalUnits = state.cargoItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const distinctItems = state.cargoItems.length;
+    const clientCount = new Set(state.cargoItems.map((item) => item.clientName).filter(Boolean)).size;
+
+    if (!totalUnits) {
+        toggle3DBtn.disabled = true;
+        toggle3DText.textContent = 'Mostrar 3D';
+        visualization3DHelper.textContent = 'Adicione itens para liberar a previa 3D da carga.';
+        visualization3DContainer.classList.add('hidden');
+        launchOrder3DIframe.src = 'about:blank';
+        isVisualization3DVisible = false;
+        return;
+    }
+
+    toggle3DBtn.disabled = false;
+    visualization3DHelper.textContent = `${totalUnits} volumes, ${distinctItems} itens cadastrados e ${Math.max(clientCount, 1)} cliente(s) na carga.`;
+
+    if (isVisualization3DVisible) {
+        const previewUrl = prepareCurrentLoad3DPreview();
+        if (previewUrl) {
+            launchOrder3DIframe.src = previewUrl;
+        }
+    }
 }
 
 // Event listeners para visualização 3D estática
 document.addEventListener('DOMContentLoaded', () => {
-    const toggleBtn = document.getElementById('toggle-3d-btn');
-    const resetBtn = document.getElementById('reset-3d-btn');
-    const toggleText = document.getElementById('toggle-text');
-    
-    if (toggleBtn) {
-        toggleBtn.addEventListener('click', () => {
-            const container = document.getElementById('visualization-3d-container');
-            
-            if (container.classList.contains('hidden')) {
-                // Mostrar visualização 3D estática
-                container.classList.remove('hidden');
-                toggleText.textContent = 'Ocultar 3D';
+    if (toggle3DBtn && launchOrder3DIframe) {
+        toggle3DBtn.addEventListener('click', () => {
+            if (!visualization3DContainer || toggle3DBtn.disabled) {
+                return;
+            }
+
+            if (visualization3DContainer.classList.contains('hidden')) {
+                const previewUrl = prepareCurrentLoad3DPreview();
+                if (!previewUrl) return;
+                visualization3DContainer.classList.remove('hidden');
+                toggle3DText.textContent = 'Ocultar 3D';
                 isVisualization3DVisible = true;
-                
-                if (!scene3D) {
-                    initVisualization3D();
-                }
-                
-                updateVisualization3D();
+                launchOrder3DIframe.src = previewUrl;
             } else {
-                // Ocultar visualização 3D
-                container.classList.add('hidden');
-                toggleText.textContent = 'Mostrar 3D';
+                visualization3DContainer.classList.add('hidden');
+                toggle3DText.textContent = 'Mostrar 3D';
+                launchOrder3DIframe.src = 'about:blank';
                 isVisualization3DVisible = false;
             }
         });
     }
-    
-    // Botão reset não faz nada na versão estática
-    if (resetBtn) {
-        resetBtn.style.display = 'none'; // esconder botão reset
-    }
-    
-    // Atualizar visualização quando os itens mudam
-    const observer = new MutationObserver(() => {
-        if (isVisualization3DVisible) {
-            updateVisualization3D();
-        }
-    });
-    
-    const cargoItemsElement = document.getElementById('cargo-items');
-    if (cargoItemsElement) {
-        observer.observe(cargoItemsElement, { childList: true, subtree: true });
-    }
-});
 
+    syncVisualization3DPanel();
+});

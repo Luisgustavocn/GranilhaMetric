@@ -6,33 +6,91 @@ const { DatabaseSync } = require('node:sqlite');
 
 const PORT = process.env.PORT || 3000;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const MAX_JSON_PAYLOAD_BYTES = 1_000_000;
+const LOGIN_WINDOW_MS = 1000 * 60 * 15;
+const LOGIN_MAX_ATTEMPTS = 8;
+const API_READ_WINDOW_MS = 1000 * 60 * 5;
+const API_READ_MAX_REQUESTS = 600;
+const API_WRITE_WINDOW_MS = 1000 * 60 * 5;
+const API_WRITE_MAX_REQUESTS = 180;
+const MAX_NAME_LENGTH = 120;
+const MAX_EMAIL_LENGTH = 254;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DB_PATH = path.join(__dirname, 'database.sqlite');
 
 const db = new DatabaseSync(DB_PATH);
 const sessions = new Map();
+const loginAttempts = new Map();
+const apiRateLimits = new Map();
 
 initDb();
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  const method = (req.method || 'GET').toUpperCase();
 
   try {
     if (url.pathname.startsWith('/api/')) {
+      if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)) {
+        sendText(res, 405, 'Método não permitido.');
+        return;
+      }
+
       await handleApi(req, res, url);
       return;
     }
 
-    serveStaticFile(res, url.pathname);
+    if (!['GET', 'HEAD'].includes(method)) {
+      sendText(res, 405, 'Método não permitido.');
+      return;
+    }
+
+    serveStaticFile(res, url.pathname, method);
   } catch (error) {
     console.error(error);
+    if (error?.message === 'Payload muito grande.') {
+      sendJson(res, 413, { error: error.message });
+      return;
+    }
+
+    if (error?.message === 'JSON inválido.' || error?.message === 'Content-Type inválido.') {
+      sendJson(res, 400, { error: error.message });
+      return;
+    }
+
     sendJson(res, 500, { error: 'Erro interno no servidor.' });
   }
 });
 
+server.requestTimeout = 15_000;
+server.headersTimeout = 10_000;
+server.keepAliveTimeout = 5_000;
+
 server.listen(PORT, () => {
   console.log(`Servidor iniciado em http://localhost:${PORT}`);
 });
+
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [token, session] of sessions.entries()) {
+    if (session.expiresAt <= now) {
+      sessions.delete(token);
+    }
+  }
+
+  for (const [ip, current] of loginAttempts.entries()) {
+    if ((current.blockedUntil || current.windowStartedAt) + LOGIN_WINDOW_MS <= now) {
+      loginAttempts.delete(ip);
+    }
+  }
+
+  for (const [key, current] of apiRateLimits.entries()) {
+    if (current.resetAt <= now) {
+      apiRateLimits.delete(key);
+    }
+  }
+}, 60_000).unref();
 
 function initDb() {
   db.exec('PRAGMA journal_mode = WAL;');
@@ -164,6 +222,7 @@ function initDb() {
   `);
 
   ensureOrderSchemaCompatibility();
+  normalizeCanNominalVolumes();
 
   const userCount = db.prepare('SELECT COUNT(*) AS count FROM users').get().count;
   if (!userCount) {
@@ -330,6 +389,51 @@ function ensureOrderSchemaCompatibility() {
   }
 }
 
+function normalizeCanNominalVolumes() {
+  const cans = db.prepare('SELECT id, name, volume_cm3 FROM cans').all();
+  const updateVolume = db.prepare('UPDATE cans SET volume_cm3 = ? WHERE id = ?');
+
+  for (const can of cans) {
+    const inferredVolumeCm3 = inferCommercialVolumeCm3(can.name);
+    if (!(inferredVolumeCm3 > 0)) {
+      continue;
+    }
+
+    if (Math.abs(Number(can.volume_cm3 || 0) - inferredVolumeCm3) > 0.5) {
+      updateVolume.run(inferredVolumeCm3, can.id);
+    }
+  }
+}
+
+function inferCommercialVolumeCm3(nameInput) {
+  const name = String(nameInput || '').toUpperCase();
+  if (!name) return null;
+
+  const slashMlMatch = name.match(/(\d+(?:[.,]\d+)?)\s*\/\s*(\d+(?:[.,]\d+)?)\s*ML/);
+  if (slashMlMatch) {
+    const first = Number(slashMlMatch[1].replace(',', '.'));
+    const second = Number(slashMlMatch[2].replace(',', '.'));
+    const valueMl = Math.max(first, second);
+    return Number.isFinite(valueMl) && valueMl > 0 ? valueMl : null;
+  }
+
+  const matches = [...name.matchAll(/(\d+(?:[.,]\d+)?)\s*(ML|LT|L)\b/g)];
+  if (!matches.length) return null;
+
+  const volumesCm3 = matches
+    .map((match) => {
+      const value = Number(match[1].replace(',', '.'));
+      const unit = match[2];
+      if (!Number.isFinite(value) || value <= 0) return null;
+      if (unit === 'ML') return value;
+      return value * 1000;
+    })
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  if (!volumesCm3.length) return null;
+  return Math.max(...volumesCm3);
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const canIdMatch = url.pathname.match(/^\/api\/cans\/(\d+)$/);
@@ -338,9 +442,30 @@ async function handleApi(req, res, url) {
   const orderIdMatch = url.pathname.match(/^\/api\/orders\/(\d+)$/);
   const orderConcludeMatch = url.pathname.match(/^\/api\/orders\/(\d+)\/conclude$/);
 
+  if (!enforceApiRateLimit(req, res, method)) {
+    return;
+  }
+
   if (method === 'POST' && url.pathname === '/api/login') {
+    if (!isSameOriginRequest(req)) {
+      return sendJson(res, 403, { error: 'Origem da requisição não permitida.' });
+    }
+    ensureJsonRequest(req);
     const body = await readJson(req);
-    return login(res, body);
+    return login(req, res, body);
+  }
+
+  if (['POST', 'PUT', 'DELETE'].includes(method) && !isSameOriginRequest(req)) {
+    return sendJson(res, 403, { error: 'Origem da requisição não permitida.' });
+  }
+
+  if (['POST', 'PUT'].includes(method)) {
+    ensureJsonRequest(req);
+  }
+
+  if (['POST', 'PUT', 'DELETE'].includes(method)) {
+    const csrfCheck = requireCsrf(req, res);
+    if (!csrfCheck) return;
   }
 
   if (method === 'POST' && url.pathname === '/api/logout') {
@@ -348,9 +473,9 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && url.pathname === '/api/me') {
-    const user = requireAuth(req, res);
-    if (!user) return;
-    return sendJson(res, 200, { user: safeUser(user) });
+    const session = requireSession(req, res);
+    if (!session) return;
+    return sendJson(res, 200, { user: safeUser(session.user), csrfToken: session.session.csrfToken });
   }
 
   if (method === 'GET' && url.pathname === '/api/cans') {
@@ -555,69 +680,10 @@ async function handleApi(req, res, url) {
     return calculateLoad(res, body);
   }
 
-  if (method === 'POST' && url.pathname === '/api/packing-3d') {
-    const user = requireAuth(req, res);
-    if (!user) return;
-    const body = await readJson(req);
-    const items = Array.isArray(body?.items) ? body.items : [];
-    const truckDimensions = body?.truckDimensions || {
-      length_cm: 1450,
-      width_cm: 245,
-      height_cm: 170
-    };
-
-    if (!items.length) {
-      return sendJson(res, 400, { error: 'Adicione ao menos um item.' });
-    }
-
-    try {
-      // Converter itens para formato 3D
-      const items3D = items.map(item => {
-        const can = db.prepare('SELECT id, name, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3 FROM cans WHERE id = ?').get(item.canId);
-        if (!can) {
-          throw new Error(`Lata ${item.canId} não encontrada`);
-        }
-
-        return {
-          canId: can.id,
-          canName: can.name,
-          quantity: item.quantity,
-          dimensions: getItem3DDimensions(can)
-        };
-      });
-
-      // Calcular empacotamento 3D
-      const packingResult = calculate3DPacking(items3D, truckDimensions);
-
-      // Calcular estatísticas de geometria
-      const geometryStats = calculatePackingEfficiencyWithGeometry(packingResult.packedItems);
-
-      return sendJson(res, 200, {
-        success: true,
-        truckDimensions,
-        packingResult,
-        geometryStats,
-        items: packingResult.packedItems.map(item => ({
-          canId: item.canId,
-          canName: item.canName,
-          quantity: 1, // Cada item individual
-          dimensions: item.dimensions,
-          position: item.position,
-          orientation: item.orientation,
-          rotated: item.rotated,
-          geometry: item.geometry,
-          color: getItemColor(item.canName)
-        }))
-      });
-    } catch (error) {
-      return sendJson(res, 500, { error: error.message });
-    }
-  }
-
   sendJson(res, 404, { error: 'Rota não encontrada.' });
 }
 
-function login(res, body) {
+function login(req, res, body) {
   const email = String(body?.email || '').trim().toLowerCase();
   const password = String(body?.password || '');
 
@@ -625,22 +691,33 @@ function login(res, body) {
     return sendJson(res, 400, { error: 'Informe email e senha.' });
   }
 
+  const rateLimitState = getLoginRateLimitState(req);
+  if (rateLimitState.blocked) {
+    res.setHeader('Retry-After', String(rateLimitState.retryAfterSeconds));
+    return sendJson(res, 429, { error: 'Muitas tentativas de login. Aguarde alguns minutos e tente novamente.' });
+  }
+
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
   if (!user || !verifyPassword(password, user.password_hash)) {
+    registerLoginFailure(req);
     return sendJson(res, 401, { error: 'Credenciais invalidas.' });
   }
 
+  clearLoginFailures(req);
+
   const sessionToken = crypto.randomBytes(32).toString('hex');
-  sessions.set(sessionToken, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
+  const session = createSessionRecord(req, user.id);
+  sessions.set(sessionToken, session);
 
   setCookie(res, 'sid', sessionToken, {
     httpOnly: true,
     sameSite: 'Strict',
+    secure: isSecureRequest(req),
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
     path: '/'
   });
 
-  sendJson(res, 200, { user: safeUser(user) });
+  sendJson(res, 200, { user: safeUser(user), csrfToken: session.csrfToken });
 }
 
 function logout(req, res) {
@@ -649,15 +726,16 @@ function logout(req, res) {
     sessions.delete(cookies.sid);
   }
 
-  setCookie(res, 'sid', '', { httpOnly: true, sameSite: 'Strict', maxAge: 0, path: '/' });
+  setCookie(res, 'sid', '', { httpOnly: true, sameSite: 'Strict', secure: isSecureRequest(req), maxAge: 0, path: '/' });
   sendJson(res, 200, { ok: true });
 }
 
 function createCanCategory(currentUser, res, body) {
   const name = String(body?.name || '').trim();
 
-  if (!name) {
-    return sendJson(res, 400, { error: 'O nome da categoria é obrigatório.' });
+  const nameError = validateEntityName(name, 'categoria');
+  if (nameError) {
+    return sendJson(res, 400, { error: nameError });
   }
 
   const existingCategory = db.prepare('SELECT id FROM can_categories WHERE name = ?').get(name);
@@ -677,8 +755,9 @@ function updateCanCategory(currentUser, res, categoryId, body) {
 
   const name = String(body?.name || '').trim();
 
-  if (!name) {
-    return sendJson(res, 400, { error: 'O nome da categoria é obrigatório.' });
+  const nameError = validateEntityName(name, 'categoria');
+  if (nameError) {
+    return sendJson(res, 400, { error: nameError });
   }
 
   if (name !== existing.name) {
@@ -712,8 +791,9 @@ function deleteCanCategory(currentUser, res, categoryId) {
 function createClient(currentUser, res, body) {
   const name = String(body?.name || '').trim();
 
-  if (!name) {
-    return sendJson(res, 400, { error: 'O nome do cliente é obrigatório.' });
+  const nameError = validateEntityName(name, 'cliente');
+  if (nameError) {
+    return sendJson(res, 400, { error: nameError });
   }
 
   const existingClient = db.prepare('SELECT id FROM clients WHERE name = ?').get(name);
@@ -750,11 +830,13 @@ function updateCan(res, canId, body) {
 
   const mergedBody = {
     name: body?.name ?? existing.name,
+    categoryId: body?.categoryId ?? existing.category_id,
     shape: body?.shape ?? existing.shape,
     heightCm: body?.heightCm ?? existing.height_cm,
     side1Cm: body?.side1Cm ?? body?.lengthCm ?? existing.length_cm,
     side2Cm: body?.side2Cm ?? body?.widthCm ?? existing.width_cm,
-    diameterCm: body?.diameterCm ?? existing.diameter_cm
+    diameterCm: body?.diameterCm ?? existing.diameter_cm,
+    circumferenceCm: body?.circumferenceCm
   };
 
   const parsed = parseCanPayload(mergedBody);
@@ -763,12 +845,13 @@ function updateCan(res, canId, body) {
   }
 
   const { name, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3 } = parsed;
+  const categoryId = mergedBody.categoryId ? Number(mergedBody.categoryId) : null;
 
   db.prepare(`
     UPDATE cans
-    SET name = ?, shape = ?, length_cm = ?, width_cm = ?, depth_cm = ?, diameter_cm = ?, height_cm = ?, volume_cm3 = ?
+    SET name = ?, category_id = ?, shape = ?, length_cm = ?, width_cm = ?, depth_cm = ?, diameter_cm = ?, height_cm = ?, volume_cm3 = ?
     WHERE id = ?
-  `).run(name, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3, canId);
+  `).run(name, categoryId, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3, canId);
 
   sendJson(res, 200, { ok: true });
 }
@@ -789,13 +872,15 @@ function createTruck(res, body) {
   const heightCm = Number(body?.heightCm);
   const quantity = Number(body?.quantity ?? 1);
 
+  const nameError = validateEntityName(name, 'caminhão');
+
   if (
-    !name ||
+    nameError ||
     ![lengthCm, widthCm, heightCm].every((value) => Number.isFinite(value) && value > 0) ||
     !Number.isInteger(quantity) ||
     quantity <= 0
   ) {
-    return sendJson(res, 400, { error: 'Nome, medidas válidas e quantidade inteira do caminhão são obrigatórios.' });
+    return sendJson(res, 400, { error: nameError || 'Nome, medidas válidas e quantidade inteira do caminhão são obrigatórios.' });
   }
 
   const volumeCm3 = lengthCm * widthCm * heightCm;
@@ -820,13 +905,15 @@ function updateTruck(res, truckId, body) {
   const heightCm = Number(body?.heightCm ?? existing.height_cm);
   const quantity = Number(body?.quantity ?? existing.quantity ?? 1);
 
+  const nameError = validateEntityName(name, 'caminhão');
+
   if (
-    !name ||
+    nameError ||
     ![lengthCm, widthCm, heightCm].every((value) => Number.isFinite(value) && value > 0) ||
     !Number.isInteger(quantity) ||
     quantity <= 0
   ) {
-    return sendJson(res, 400, { error: 'Nome, medidas válidas e quantidade inteira do caminhão são obrigatórios.' });
+    return sendJson(res, 400, { error: nameError || 'Nome, medidas válidas e quantidade inteira do caminhão são obrigatórios.' });
   }
 
   const volumeCm3 = lengthCm * widthCm * heightCm;
@@ -882,8 +969,12 @@ function createUser(res, body) {
   const password = String(body?.password || '');
   const role = String(body?.role || 'user').trim();
 
-  if (!name || !email || !password || !['admin', 'user'].includes(role)) {
-    return sendJson(res, 400, { error: 'Dados do usuário inválidos.' });
+  const nameError = validateEntityName(name, 'usuário');
+  const emailError = validateEmailAddress(email);
+  const passwordError = validatePasswordStrength(password);
+
+  if (nameError || emailError || passwordError || !['admin', 'user'].includes(role)) {
+    return sendJson(res, 400, { error: nameError || emailError || passwordError || 'Dados do usuário inválidos.' });
   }
 
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
@@ -910,8 +1001,12 @@ function updateUser(currentUser, res, userId, body) {
   const role = String(body?.role ?? existing.role).trim();
   const password = body?.password === undefined ? '' : String(body?.password || '');
 
-  if (!name || !email || !['admin', 'user'].includes(role)) {
-    return sendJson(res, 400, { error: 'Dados do usuário inválidos.' });
+  const nameError = validateEntityName(name, 'usuário');
+  const emailError = validateEmailAddress(email);
+  const passwordError = password.trim() ? validatePasswordStrength(password) : null;
+
+  if (nameError || emailError || passwordError || !['admin', 'user'].includes(role)) {
+    return sendJson(res, 400, { error: nameError || emailError || passwordError || 'Dados do usuário inválidos.' });
   }
 
   const duplicate = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(email, userId);
@@ -992,6 +1087,7 @@ function createOrder(currentUser, res, body) {
   if (load.error) {
     return sendJson(res, load.status || 400, { error: load.error });
   }
+  const requiredVolumeCm3 = load.totalEffectiveVolumeCm3 || load.totalVolumeCm3;
 
   const fallbackDate = body?.scheduledDate;
   const dateRange = parseDateRange(body?.startDate || fallbackDate, body?.endDate || fallbackDate);
@@ -1001,12 +1097,12 @@ function createOrder(currentUser, res, body) {
 
   const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
   const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate);
-  const parsedSelection = parseOrderTruckSelection(body?.allocation?.trucks, load.totalVolumeCm3, availability);
+  const parsedSelection = parseOrderTruckSelection(body?.allocation?.trucks, requiredVolumeCm3, availability);
   if (parsedSelection.error) {
     return sendJson(res, 400, { error: parsedSelection.error });
   }
 
-  const allocationCheck = buildAllocationResult(load.totalVolumeCm3, parsedSelection.allocations);
+  const allocationCheck = buildAllocationResult(requiredVolumeCm3, parsedSelection.allocations);
   if (!allocationCheck.fits) {
     return sendJson(res, 422, { error: 'A carga não cabe nos caminhões selecionados para este pedido.' });
   }
@@ -1105,18 +1201,24 @@ function getOrderDetails(res, orderId) {
 
   const items = db.prepare(`
     SELECT
-      id,
-      order_id,
-      client_name,
-      can_id,
-      can_name,
-      can_shape,
-      quantity,
-      unit_volume_cm3,
-      total_volume_cm3
-    FROM order_items
-    WHERE order_id = ?
-    ORDER BY client_name ASC, id ASC
+      oi.id,
+      oi.order_id,
+      oi.client_name,
+      oi.can_id,
+      oi.can_name,
+      oi.can_shape,
+      oi.quantity,
+      oi.unit_volume_cm3,
+      oi.total_volume_cm3,
+      c.length_cm AS can_length_cm,
+      c.width_cm AS can_width_cm,
+      c.depth_cm AS can_depth_cm,
+      c.diameter_cm AS can_diameter_cm,
+      c.height_cm AS can_height_cm
+    FROM order_items oi
+    LEFT JOIN cans c ON c.id = oi.can_id
+    WHERE oi.order_id = ?
+    ORDER BY oi.id ASC
   `).all(orderId);
 
   // Agrupar itens por cliente
@@ -1139,12 +1241,17 @@ function getOrderDetails(res, orderId) {
 
   const trucks = db.prepare(`
     SELECT
-      truck_id,
-      truck_name,
-      quantity_reserved
-    FROM order_trucks
-    WHERE order_id = ?
-    ORDER BY truck_name ASC
+      ot.truck_id,
+      ot.truck_name,
+      ot.quantity_reserved,
+      t.length_cm,
+      t.width_cm,
+      t.height_cm,
+      t.volume_cm3
+    FROM order_trucks ot
+    LEFT JOIN trucks t ON t.id = ot.truck_id
+    WHERE ot.order_id = ?
+    ORDER BY ot.id ASC
   `).all(orderId);
 
   sendJson(res, 200, { order, items: groupedItems, trucks });
@@ -1176,6 +1283,7 @@ function updateOrder(currentUser, res, orderId, body) {
   if (load.error) {
     return sendJson(res, load.status || 400, { error: load.error });
   }
+  const requiredVolumeCm3 = load.totalEffectiveVolumeCm3 || load.totalVolumeCm3;
 
   const fallbackDate = body?.scheduledDate;
   const dateRange = parseDateRange(body?.startDate || fallbackDate, body?.endDate || fallbackDate);
@@ -1190,7 +1298,7 @@ function updateOrder(currentUser, res, orderId, body) {
     return sendJson(res, 422, { error: `Não há caminhões disponíveis entre ${dateRange.startDate} e ${dateRange.endDate}.` });
   }
 
-  const autoAllocation = findAutomaticAllocation(load.totalVolumeCm3, availableTrucks, [...availability.values()]);
+  const autoAllocation = findAutomaticAllocation(requiredVolumeCm3, availableTrucks, [...availability.values()]);
   if (!autoAllocation || !autoAllocation.allocation?.fits) {
     return sendJson(res, 422, { error: 'Não foi possível recalcular a frota para esse pedido com os dados informados.' });
   }
@@ -1564,9 +1672,10 @@ function parseOrderTruckSelection(rawTrucks, totalVolumeCm3, availability = new 
 function parseCanPayload(body) {
   const name = String(body?.name || '').trim();
   const shape = String(body?.shape || '').trim();
+  const nameError = validateEntityName(name, 'lata');
 
-  if (!name || !['square', 'cylinder'].includes(shape)) {
-    return { error: 'Nome e formato válido são obrigatórios.' };
+  if (nameError || !['square', 'cylinder'].includes(shape)) {
+    return { error: nameError || 'Nome e formato válido são obrigatórios.' };
   }
 
   let lengthCm = null;
@@ -1579,7 +1688,7 @@ function parseCanPayload(body) {
     return { error: 'Altura inválida.' };
   }
 
-  let volumeCm3;
+  let geometryVolumeCm3;
 
   if (shape === 'square') {
     lengthCm = Number(body?.side1Cm ?? body?.lengthCm);
@@ -1590,15 +1699,21 @@ function parseCanPayload(body) {
       return { error: 'Medidas da lata quadrada inválidas.' };
     }
 
-    volumeCm3 = lengthCm * widthCm * depthCm;
+    geometryVolumeCm3 = lengthCm * widthCm * depthCm;
   } else {
+    const circumferenceCm = Number(body?.circumferenceCm);
     diameterCm = Number(body?.diameterCm);
+    if (Number.isFinite(circumferenceCm) && circumferenceCm > 0) {
+      diameterCm = circumferenceCm / Math.PI;
+    }
     if (!Number.isFinite(diameterCm) || diameterCm <= 0) {
-      return { error: 'Diâmetro inválido para lata cilíndrica.' };
+      return { error: 'Circunferência inválida para lata cilíndrica.' };
     }
 
-    volumeCm3 = Math.PI * (diameterCm / 2) ** 2 * heightCm;
+    geometryVolumeCm3 = Math.PI * (diameterCm / 2) ** 2 * heightCm;
   }
+
+  const volumeCm3 = inferCommercialVolumeCm3(name) || geometryVolumeCm3;
 
   return {
     name,
@@ -1910,19 +2025,10 @@ function buildLoadSummary(itemsInput) {
 
     const itemVolume = can.volume_cm3 * quantity;
     
-    // Cálculo 3D preciso - substitui eficiência fixa
-    const can3D = {
-      canId: can.id,
-      canShape: can.shape,
-      length_cm: can.length_cm,
-      width_cm: can.width_cm,
-      depth_cm: can.depth_cm,
-      diameter_cm: can.diameter_cm,
-      height_cm: can.height_cm,
-      quantity: quantity
-    };
-    
-    const dimensions = getItem3DDimensions(can3D);
+    const dimensions = getPackingDimensions(can);
+    if (!dimensions) {
+      return { error: `Dimensões inválidas para a lata ${can.name}.`, status: 400 };
+    }
     const effectiveVolume = dimensions.length * dimensions.width * dimensions.height * quantity;
     
     totalVolumeCm3 += itemVolume;
@@ -1951,28 +2057,6 @@ function buildLoadSummary(itemsInput) {
     packingEfficiency: overallPackingEfficiency,
     calculationMethod: '3d_precise'
   };
-}
-
-function getPackingEfficiency(shape) {
-  // Calibrado para REALIDADE: caminhão fica LOTADO com 285 baldes
-  // Se 285 baldes = 100% lotado, então eficiência = 285/315 = 90.48%
-  // Mas como ficou LOTADO, precisamos tratar isso como capacidade máxima
-  
-  switch (shape) {
-    case 'cylinder':
-      return 0.75; // 75% eficiência para cilindros (capacidade LOTADA)
-    case 'square':
-      return 0.85; // 85% eficiência para quadrados
-    default:
-      return 0.75;  // 75% eficiência padrão
-  }
-}
-
-function getTruckEfficiency() {
-  // Calibrado EXATO: 285 baldes = caminhão LOTADO (95% ocupação)
-  // Cálculo: 7.03m³ / (12.43m³ * eficiencia) = 0.95
-  // eficiencia = 7.03 / (12.43 * 0.95) = 0.594
-  return 0.59; // 59% de aproveitamento real (285 baldes = 95% lotação)
 }
 
 function calculateLogisticAnalysis(load, truckDimensions = null) {
@@ -2032,527 +2116,40 @@ function get3DLogisticRecommendation(occupancyRate, riskLevel, load) {
   }
 }
 
-// ===== SISTEMA DE CÁLCULO 3D PRECISO COM GEOMETRIA REAL =====
+function getPackingDimensions(item) {
+  const shape = String(item?.canShape || item?.shape || '').trim().toLowerCase();
+  const height = Number(item?.height_cm);
 
-function getItemColor(canName) {
-  // Cores hexadecimais para cada tipo de embalagem
-  const colors = {
-    'Balde 25kg': 0xff6b6b,      // Vermelho
-    'Balde 18L': 0x4ecdc4,       // Ciano
-    'Galão 3.6L': 0x45b7d1,      // Azul
-    'Galão 3.2L': 0x96ceb4,      // Azul claro
-    'Barrica 25kg': 0xffe66d,     // Amarelo
-    'Container': 0x88d8b0,       // Verde
-    'Tambor 200L': 0xff6f61,     // Laranja
-    'Lata 18L': 0xa8e6cf,       // Verde claro
-    'Quarto 900ML': 0xf7dc6f,    // Amarelo claro
-    'Lata Solvente 5L': 0xbb8fce, // Azul bebê
-    'Frasco Aerosol 225/180ML': 0xff6b9d,  // Rosa
-    'Massa Poliester': 0xc9b1ff,  // Roxo
-    'Lata Solvente 900ML': 0xfad02e, // Laranja escuro
-    'Balde Plastico 18L': 0x6c5ce7, // Índigo
-    'default': 0x95a5a6           // Cinza
-  };
-  
-  return colors[canName] || colors['default'];
-}
+  if (!Number.isFinite(height) || height <= 0) {
+    return null;
+  }
 
-function calculateRealVolume(itemDimensions, quantity = 1) {
-  // Calcular volume REAL considerando geometria específica
-  if (itemDimensions.type === 'cylinder') {
-    // Volume real do cilindro (considerando espaço perdido nos cantos)
-    const radius = itemDimensions.diameter / 2;
-    const realVolume = Math.PI * radius * radius * itemDimensions.height;
-    
-    // Volume da bounding box (para comparar espaço perdido)
-    const boundingBoxVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
-    
-    // Espaço perdido devido à forma cilíndrica
-    const wastedSpace = boundingBoxVolume - realVolume;
-    
+  if (shape === 'cylinder') {
+    const diameter = Number(item?.diameter_cm ?? item?.width_cm ?? item?.length_cm);
+    if (!Number.isFinite(diameter) || diameter <= 0) {
+      return null;
+    }
+
     return {
-      realVolume: realVolume * quantity,
-      boundingBoxVolume: boundingBoxVolume * quantity,
-      wastedSpace: wastedSpace * quantity,
-      efficiency: realVolume / boundingBoxVolume,
-      geometry: 'cylinder'
-    };
-  } else if (itemDimensions.type === 'square' || itemDimensions.type === 'box') {
-    // Formas quadradas/retangulares preenchem 100% do bounding box
-    const realVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
-    
-    return {
-      realVolume: realVolume * quantity,
-      boundingBoxVolume: realVolume * quantity,
-      wastedSpace: 0,
-      efficiency: 1.0,
-      geometry: 'square'
-    };
-  } else if (itemDimensions.type === 'container') {
-    // Containers são formas retangulares
-    const realVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
-    
-    return {
-      realVolume: realVolume * quantity,
-      boundingBoxVolume: realVolume * quantity,
-      wastedSpace: 0,
-      efficiency: 1.0,
-      geometry: 'container'
+      length: diameter,
+      width: diameter,
+      height,
+      type: 'cylinder'
     };
   }
-  
-  // Fallback para formas desconhecidas
-  const fallbackVolume = itemDimensions.length * itemDimensions.width * itemDimensions.height;
+
+  const length = Number(item?.length_cm);
+  const width = Number(item?.width_cm ?? item?.depth_cm ?? item?.length_cm);
+
+  if (![length, width].every((value) => Number.isFinite(value) && value > 0)) {
+    return null;
+  }
+
   return {
-    realVolume: fallbackVolume * quantity,
-    boundingBoxVolume: fallbackVolume * quantity,
-    wastedSpace: 0,
-    efficiency: 1.0,
-    geometry: 'unknown'
-  };
-}
-
-function calculatePackingEfficiencyWithGeometry(items) {
-  let totalRealVolume = 0;
-  let totalBoundingBoxVolume = 0;
-  let totalWastedSpace = 0;
-  
-  const geometryStats = {
-    cylinder: { count: 0, totalVolume: 0, wastedSpace: 0 },
-    square: { count: 0, totalVolume: 0, wastedSpace: 0 },
-    container: { count: 0, totalVolume: 0, wastedSpace: 0 }
-  };
-  
-  for (const item of items) {
-    const volumeData = calculateRealVolume(item.dimensions, item.quantity);
-    
-    totalRealVolume += volumeData.realVolume;
-    totalBoundingBoxVolume += volumeData.boundingBoxVolume;
-    totalWastedSpace += volumeData.wastedSpace;
-    
-    // Acumular estatísticas por geometria
-    if (geometryStats[volumeData.geometry]) {
-      geometryStats[volumeData.geometry].count++;
-      geometryStats[volumeData.geometry].totalVolume += volumeData.realVolume;
-      geometryStats[volumeData.geometry].wastedSpace += volumeData.wastedSpace;
-    }
-  }
-  
-  const overallEfficiency = totalBoundingBoxVolume > 0 ? totalRealVolume / totalBoundingBoxVolume : 1;
-  
-  return {
-    totalRealVolume,
-    totalBoundingBoxVolume,
-    totalWastedSpace,
-    overallEfficiency,
-    geometryStats,
-    wastePercentage: totalBoundingBoxVolume > 0 ? (totalWastedSpace / totalBoundingBoxVolume) * 100 : 0
-  };
-}
-
-function checkIfRotationNeeded(itemDimensions, availableSpace) {
-  // Verificar se item cabe na posição vertical (em pé)
-  if (itemDimensions.height <= availableSpace.height &&
-      itemDimensions.length <= availableSpace.length &&
-      itemDimensions.width <= availableSpace.width) {
-    return false; // Não precisa rotacionar
-  }
-  
-  // Tentar rotações horizontais (deitado)
-  const rotations = [
-    { length: itemDimensions.length, width: itemDimensions.height, height: itemDimensions.width },
-    { length: itemDimensions.width, width: itemDimensions.length, height: itemDimensions.height },
-    { length: itemDimensions.height, width: itemDimensions.width, height: itemDimensions.length }
-  ];
-  
-  for (const rotation of rotations) {
-    if (rotation.height <= availableSpace.height &&
-        rotation.length <= availableSpace.length &&
-        rotation.width <= availableSpace.width) {
-      return true; // Precisa rotacionar para caber
-    }
-  }
-  
-  return false; // Não cabe em nenhuma orientação
-}
-
-function getItemRotatedDimensions(itemDimensions, availableSpace) {
-  // Manter vertical por padrão
-  if (itemDimensions.height <= availableSpace.height &&
-      itemDimensions.length <= availableSpace.length &&
-      itemDimensions.width <= availableSpace.width) {
-    return { ...itemDimensions, rotated: false };
-  }
-  
-  // Tentar rotações horizontais se necessário
-  const rotations = [
-    { length: itemDimensions.length, width: itemDimensions.height, height: itemDimensions.width },
-    { length: itemDimensions.width, width: itemDimensions.length, height: itemDimensions.height },
-    { length: itemDimensions.height, width: itemDimensions.width, height: itemDimensions.length }
-  ];
-  
-  for (let i = 0; i < rotations.length; i++) {
-    const rotation = rotations[i];
-    if (rotation.height <= availableSpace.height &&
-        rotation.length <= availableSpace.length &&
-        rotation.width <= availableSpace.width) {
-      return {
-        ...rotation,
-        type: itemDimensions.type,
-        diameter: itemDimensions.diameter,
-        orientation: 'horizontal',
-        rotated: true,
-        rotationIndex: i
-      };
-    }
-  }
-  
-  return itemDimensions; // Retorna original se não couber
-}
-
-function calculate3DPacking(items, truckDimensions) {
-  const { length_cm: truckLength, width_cm: truckWidth, height_cm: truckHeight } = truckDimensions;
-  
-  // Converter itens para formato 3D padronizado com orientação vertical
-  const items3D = items.map(item => ({
-    ...item,
-    dimensions: getItem3DDimensions(item),
-    quantity: item.quantity
-  }));
-  
-  // Tentar diferentes estratégias de empacotamento com prioridade vertical
-  const strategies = [
-    () => packByVolume(items3D, truckDimensions),
-    () => packByLayers(items3D, truckDimensions),
-    () => packByOptimalRotation(items3D, truckDimensions)
-  ];
-  
-  let bestResult = null;
-  let maxPackedItems = 0;
-  
-  for (const strategy of strategies) {
-    try {
-      const result = strategy();
-      if (result && result.totalPackedItems > maxPackedItems) {
-        bestResult = result;
-        maxPackedItems = result.totalPackedItems;
-      }
-    } catch (error) {
-      console.warn('Erro na estratégia de empacotamento 3D vertical:', error.message);
-    }
-  }
-  
-  return bestResult || createFallbackResult(items3D, truckDimensions);
-}
-
-function getItem3DDimensions(item) {
-  // PRIORIZAR POSIÇÃO VERTICAL (em pé) - só rotacionar se necessário
-  if (item.canShape === 'cylinder') {
-    // Para cilindros, manter vertical (em pé) por padrão
-    const diameter = item.diameter_cm || item.width_cm || 30; // valor padrão
-    const height = item.height_cm || 30;
-    return {
-      length: diameter,  // diâmetro como comprimento
-      width: diameter,   // diâmetro como largura  
-      height: height,    // altura vertical
-      type: 'cylinder',
-      diameter: diameter,
-      orientation: 'vertical' // posição padrão: em pé
-    };
-  } else if (item.canShape === 'container') {
-    // Para containers, manter na orientação padrão vertical
-    return {
-      length: 115,   // 1.15m largura
-      width: 115,    // 1.15m comprimento  
-      height: 116,   // 1.16m altura
-      type: 'container',
-      orientation: 'vertical'
-    };
-  } else {
-    // Para formas quadradas/retangulares, manter altura como dimensão principal
-    return {
-      length: item.length_cm || 30,
-      width: item.width_cm || 30,
-      height: item.height_cm || 30,
-      type: 'box',
-      orientation: 'vertical'
-    };
-  }
-}
-
-function packByVolume(items, truckDimensions) {
-  const { length_cm: truckLength, width_cm: truckWidth, height_cm: truckHeight } = truckDimensions;
-  const truckVolume = truckLength * truckWidth * truckHeight;
-  
-  let totalRealVolume = 0;
-  let totalBoundingBoxVolume = 0;
-  let totalPackedItems = 0;
-  const packedItems = [];
-  
-  // Espaço 3D disponível
-  const availableSpace = {
-    length: truckLength,
-    width: truckWidth,
-    height: truckHeight
-  };
-  
-  // Ordenar itens por volume real (maiores primeiro)
-  const sortedItems = items.sort((a, b) => {
-    const volA = calculateRealVolume(a.dimensions).realVolume;
-    const volB = calculateRealVolume(b.dimensions).realVolume;
-    return volB - volA;
-  });
-  
-  for (const item of sortedItems) {
-    const volumeData = calculateRealVolume(item.dimensions);
-    
-    for (let i = 0; i < item.quantity; i++) {
-      // Verificar se cabe na posição vertical (em pé)
-      const needsRotation = checkIfRotationNeeded(item.dimensions, availableSpace);
-      const finalDimensions = getItemRotatedDimensions(item.dimensions, availableSpace);
-      
-      if (finalDimensions.height <= availableSpace.height &&
-          finalDimensions.length <= availableSpace.length &&
-          finalDimensions.width <= availableSpace.width) {
-        
-        totalRealVolume += volumeData.realVolume;
-        totalBoundingBoxVolume += volumeData.boundingBoxVolume;
-        totalPackedItems++;
-        
-        packedItems.push({
-          canId: item.canId,
-          canName: item.canName,
-          dimensions: finalDimensions,
-          volumeData: calculateRealVolume(finalDimensions),
-          position: findOptimalPosition(finalDimensions, availableSpace, packedItems),
-          orientation: finalDimensions.orientation || 'vertical',
-          rotated: finalDimensions.rotated || false,
-          geometry: volumeData.geometry
-        });
-        
-        // Atualizar espaço disponível
-        updateAvailableSpace(availableSpace, finalDimensions);
-      }
-    }
-  }
-  
-  const usedVolumePercentage = (totalRealVolume / truckVolume) * 100;
-  const unusedVolume = truckVolume - totalRealVolume;
-  
-  // Calcular estatísticas de rotação e geometria
-  const rotatedItems = packedItems.filter(item => item.rotated);
-  const rotationRate = (rotatedItems.length / packedItems.length) * 100;
-  
-  const geometryEfficiency = calculatePackingEfficiencyWithGeometry(packedItems);
-  
-  return {
-    strategy: 'volume_based_geometry',
-    totalPackedItems,
-    totalRealVolume,
-    totalBoundingBoxVolume,
-    totalWastedSpace: geometryEfficiency.totalWastedSpace,
-    truckVolume,
-    usedVolumePercentage,
-    unusedVolume,
-    packedItems,
-    rotationStats: {
-      totalItems: packedItems.length,
-      rotatedItems: rotatedItems.length,
-      rotationRate: rotationRate.toFixed(1) + '%'
-    },
-    geometryStats: geometryEfficiency,
-    fits: totalPackedItems === items.reduce((sum, item) => sum + item.quantity, 0)
-  };
-}
-
-function packByLayers(items, truckDimensions) {
-  const { length_cm: truckLength, width_cm: truckWidth, height_cm: truckHeight } = truckDimensions;
-  
-  let currentHeight = 0;
-  let totalPackedItems = 0;
-  const packedItems = [];
-  
-  // Agrupar itens por altura
-  const itemsByHeight = groupItemsByHeight(items);
-  
-  for (const [height, heightItems] of itemsByHeight) {
-    if (currentHeight + height > truckHeight) break;
-    
-    const layerSpace = {
-      length: truckLength,
-      width: truckWidth,
-      height: height
-    };
-    
-    const layerResult = pack2DLayerVertical(heightItems, layerSpace, currentHeight);
-    
-    totalPackedItems += layerResult.packedCount;
-    packedItems.push(...layerResult.items);
-    currentHeight += height;
-  }
-  
-  const totalItemVolume = packedItems.reduce((sum, item) => {
-    return sum + (item.dimensions.length * item.dimensions.width * item.dimensions.height);
-  }, 0);
-  
-  const truckVolume = truckLength * truckWidth * truckHeight;
-  
-  // Calcular estatísticas de rotação
-  const rotatedItems = packedItems.filter(item => item.rotated);
-  const rotationRate = (rotatedItems.length / packedItems.length) * 100;
-  
-  return {
-    strategy: 'layer_based_vertical',
-    totalPackedItems,
-    totalItemVolume,
-    truckVolume,
-    usedVolumePercentage: (totalItemVolume / truckVolume) * 100,
-    unusedVolume: truckVolume - totalItemVolume,
-    packedItems,
-    layersUsed: Math.ceil(currentHeight / Math.max(...items.map(i => i.dimensions.height))),
-    rotationStats: {
-      totalItems: packedItems.length,
-      rotatedItems: rotatedItems.length,
-      rotationRate: rotationRate.toFixed(1) + '%'
-    },
-    fits: totalPackedItems === items.reduce((sum, item) => sum + item.quantity, 0)
-  };
-}
-
-function packByOptimalRotation(items, truckDimensions) {
-  const { length_cm: truckLength, width_cm: truckWidth, height_cm: truckHeight } = truckDimensions;
-  
-  let bestResult = null;
-  let maxPackedItems = 0;
-  
-  // Tentar diferentes rotações do caminhão, mas mantendo itens verticais
-  const truckRotations = [
-    { length: truckLength, width: truckWidth, height: truckHeight },
-    { length: truckWidth, width: truckLength, height: truckHeight }
-  ];
-  
-  for (const rotation of truckRotations) {
-    // Usar packByVolume que já tem a lógica vertical
-    const result = packByVolume(items, rotation);
-    if (result.totalPackedItems > maxPackedItems) {
-      maxPackedItems = result.totalPackedItems;
-      bestResult = {
-        ...result,
-        strategy: 'optimal_rotation_vertical',
-        truckRotation: rotation
-      };
-    }
-  }
-  
-  return bestResult;
-}
-
-function canFitIn3DSpace(itemDimensions, availableSpace) {
-  return itemDimensions.length <= availableSpace.length &&
-         itemDimensions.width <= availableSpace.width &&
-         itemDimensions.height <= availableSpace.height;
-}
-
-function findOptimalPosition(itemDimensions, availableSpace, packedItems) {
-  // Simplificado: posição baseada no canto inferior esquerdo traseiro
-  // Em uma implementação completa, isso seria um algoritmo mais complexo
-  return {
-    x: 0,
-    y: 0,
-    z: 0
-  };
-}
-
-function updateAvailableSpace(availableSpace, itemDimensions) {
-  // Simplificado: reduz espaço disponível
-  // Em uma implementação completa, isso gerenciaria múltiplos espaços vazios
-  availableSpace.length -= itemDimensions.length;
-  if (availableSpace.length < 0) availableSpace.length = 0;
-}
-
-function groupItemsByHeight(items) {
-  const groups = new Map();
-  
-  for (const item of items) {
-    const height = item.dimensions.height;
-    if (!groups.has(height)) {
-      groups.set(height, []);
-    }
-    groups.get(height).push(item);
-  }
-  
-  return groups;
-}
-
-function pack2DLayer(items, layerDimensions, baseHeight) {
-  const { length, width } = layerDimensions;
-  const layerArea = length * width;
-  
-  let usedArea = 0;
-  let packedCount = 0;
-  const packedItems = [];
-  
-  // Ordenar por área (maiores primeiro)
-  const sortedItems = items.sort((a, b) => {
-    const areaA = a.dimensions.length * a.dimensions.width;
-    const areaB = b.dimensions.length * b.dimensions.width;
-    return areaB - areaA;
-  });
-  
-  for (const item of sortedItems) {
-    const itemArea = item.dimensions.length * item.dimensions.width;
-    
-    for (let i = 0; i < item.quantity; i++) {
-      if (usedArea + itemArea <= layerArea) {
-        usedArea += itemArea;
-        packedCount++;
-        
-        packedItems.push({
-          ...item,
-          position: {
-            x: 0,
-            y: 0,
-            z: baseHeight
-          }
-        });
-      }
-    }
-  }
-  
-  return {
-    packedCount,
-    items: packedItems,
-    usedArea,
-    unusedArea: layerArea - usedArea,
-    areaUtilization: (usedArea / layerArea) * 100
-  };
-}
-
-function createFallbackResult(items, truckDimensions) {
-  const { length_cm: truckLength, width_cm: truckWidth, height_cm: truckHeight } = truckDimensions;
-  const truckVolume = truckLength * truckWidth * truckHeight;
-  
-  let totalItemVolume = 0;
-  let totalPackedItems = 0;
-  
-  for (const item of items) {
-    const itemVolume = item.dimensions.length * item.dimensions.width * item.dimensions.height;
-    totalItemVolume += itemVolume * item.quantity;
-    totalPackedItems += item.quantity;
-  }
-  
-  return {
-    strategy: 'fallback_volume',
-    totalPackedItems,
-    totalItemVolume,
-    truckVolume,
-    usedVolumePercentage: Math.min((totalItemVolume / truckVolume) * 100, 100),
-    unusedVolume: Math.max(truckVolume - totalItemVolume, 0),
-    packedItems: items.map(item => ({
-      ...item,
-      position: { x: 0, y: 0, z: 0 }
-    })),
-    fits: totalItemVolume <= truckVolume
+    length,
+    width,
+    height,
+    type: shape === 'container' ? 'container' : 'box'
   };
 }
 
@@ -2666,7 +2263,7 @@ function findBestFleetForAutomatic(totalVolumeCm3, trucks) {
   return best;
 }
 
-function getSessionUser(req) {
+function getSessionContext(req) {
   const cookies = parseCookies(req.headers.cookie || '');
   const token = cookies.sid;
   if (!token) return null;
@@ -2679,23 +2276,41 @@ function getSessionUser(req) {
     return null;
   }
 
+  const requestFingerprint = getRequestFingerprint(req);
+  if (
+    session.ipHash !== requestFingerprint.ipHash ||
+    session.userAgentHash !== requestFingerprint.userAgentHash
+  ) {
+    sessions.delete(token);
+    return null;
+  }
+
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.userId);
   if (!user) {
     sessions.delete(token);
     return null;
   }
 
-  return user;
+  session.expiresAt = Date.now() + SESSION_TTL_MS;
+  return { token, session, user };
 }
 
-function requireAuth(req, res) {
-  const user = getSessionUser(req);
-  if (!user) {
+function getSessionUser(req) {
+  return getSessionContext(req)?.user || null;
+}
+
+function requireSession(req, res) {
+  const context = getSessionContext(req);
+  if (!context) {
     sendJson(res, 401, { error: 'Não autenticado.' });
     return null;
   }
 
-  return user;
+  return context;
+}
+
+function requireAuth(req, res) {
+  return requireSession(req, res)?.user || null;
 }
 
 function requireAdmin(req, res) {
@@ -2714,6 +2329,50 @@ function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return `${salt}:${hash}`;
+}
+
+function validateEntityName(name, label = 'registro') {
+  if (!name) {
+    return `O nome do ${label} é obrigatório.`;
+  }
+
+  if (name.length > MAX_NAME_LENGTH) {
+    return `O nome do ${label} deve ter no máximo ${MAX_NAME_LENGTH} caracteres.`;
+  }
+
+  if (/[\u0000-\u001F\u007F]/.test(name)) {
+    return `O nome do ${label} contém caracteres inválidos.`;
+  }
+
+  return null;
+}
+
+function validateEmailAddress(email) {
+  if (!email) {
+    return 'E-mail é obrigatório.';
+  }
+
+  if (email.length > MAX_EMAIL_LENGTH) {
+    return `O e-mail deve ter no máximo ${MAX_EMAIL_LENGTH} caracteres.`;
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return 'E-mail inválido.';
+  }
+
+  return null;
+}
+
+function validatePasswordStrength(password) {
+  if (password.length < 12) {
+    return 'A senha deve ter pelo menos 12 caracteres.';
+  }
+
+  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+    return 'A senha deve incluir letra maiúscula, minúscula, número e caractere especial.';
+  }
+
+  return null;
 }
 
 function verifyPassword(password, fullHash) {
@@ -2761,6 +2420,7 @@ function setCookie(res, name, value, options = {}) {
   if (options.httpOnly) parts.push('HttpOnly');
   if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
   if (options.path) parts.push(`Path=${options.path}`);
+  if (options.secure) parts.push('Secure');
 
   res.setHeader('Set-Cookie', parts.join('; '));
 }
@@ -2773,7 +2433,7 @@ function clearSessionsByUserId(userId) {
   }
 }
 
-function serveStaticFile(res, pathname) {
+function serveStaticFile(res, pathname, method = 'GET') {
   const safePath = pathname === '/' ? '/index.html' : pathname;
   const filePath = path.normalize(path.join(PUBLIC_DIR, safePath));
 
@@ -2789,7 +2449,14 @@ function serveStaticFile(res, pathname) {
     }
 
     const contentType = getContentType(filePath);
-    res.writeHead(200, { 'Content-Type': contentType });
+    res.writeHead(200, getBaseHeaders({
+      contentType,
+      cacheControl: contentType.startsWith('text/html') ? 'no-store' : 'private, max-age=300'
+    }));
+    if (method === 'HEAD') {
+      res.end();
+      return;
+    }
     res.end(data);
   });
 }
@@ -2822,7 +2489,7 @@ async function readJson(req) {
 
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 1_000_000) {
+      if (data.length > MAX_JSON_PAYLOAD_BYTES) {
         req.socket.destroy();
         reject(new Error('Payload muito grande.'));
       }
@@ -2846,11 +2513,189 @@ async function readJson(req) {
 }
 
 function sendJson(res, status, payload) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.writeHead(status, getBaseHeaders({
+    contentType: 'application/json; charset=utf-8',
+    cacheControl: 'no-store'
+  }));
   res.end(JSON.stringify(payload));
 }
 
 function sendText(res, status, message) {
-  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.writeHead(status, getBaseHeaders({
+    contentType: 'text/plain; charset=utf-8',
+    cacheControl: 'no-store'
+  }));
   res.end(message);
+}
+
+function getBaseHeaders({ contentType, cacheControl } = {}) {
+  return {
+    ...(contentType ? { 'Content-Type': contentType } : {}),
+    ...(cacheControl ? { 'Cache-Control': cacheControl } : {}),
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Origin-Agent-Cluster': '?1',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    'Referrer-Policy': 'same-origin',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'X-Robots-Tag': 'noindex, nofollow'
+  };
+}
+
+function isSameOriginRequest(req) {
+  const originHeader = String(req.headers.origin || '').trim();
+  if (!originHeader) {
+    return true;
+  }
+
+  try {
+    const originUrl = new URL(originHeader);
+    const expectedOrigin = getExpectedOrigin(req);
+    return !expectedOrigin || originUrl.origin === expectedOrigin;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function getExpectedOrigin(req) {
+  const configured = String(process.env.APP_ORIGIN || '').trim();
+  if (configured) {
+    return configured.replace(/\/$/, '');
+  }
+
+  const protocol = isSecureRequest(req) ? 'https' : 'http';
+  return `${protocol}://${req.headers.host}`;
+}
+
+function isSecureRequest(req) {
+  return req.socket?.encrypted || String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https';
+}
+
+function getClientIp(req) {
+  const forwardedFor = String(req.headers['x-forwarded-for'] || '').trim();
+  if (forwardedFor) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function getLoginRateLimitState(req) {
+  const now = Date.now();
+  const ip = getClientIp(req);
+  const current = loginAttempts.get(ip);
+
+  if (!current) {
+    return { blocked: false, retryAfterSeconds: 0 };
+  }
+
+  if (current.blockedUntil && current.blockedUntil > now) {
+    return {
+      blocked: true,
+      retryAfterSeconds: Math.max(1, Math.ceil((current.blockedUntil - now) / 1000))
+    };
+  }
+
+  if (now - current.windowStartedAt > LOGIN_WINDOW_MS) {
+    loginAttempts.delete(ip);
+  }
+
+  return { blocked: false, retryAfterSeconds: 0 };
+}
+
+function registerLoginFailure(req) {
+  const now = Date.now();
+  const ip = getClientIp(req);
+  const current = loginAttempts.get(ip);
+
+  if (!current || now - current.windowStartedAt > LOGIN_WINDOW_MS) {
+    loginAttempts.set(ip, {
+      attempts: 1,
+      windowStartedAt: now,
+      blockedUntil: 0
+    });
+    return;
+  }
+
+  current.attempts += 1;
+  if (current.attempts >= LOGIN_MAX_ATTEMPTS) {
+    current.blockedUntil = now + LOGIN_WINDOW_MS;
+  }
+  loginAttempts.set(ip, current);
+}
+
+function clearLoginFailures(req) {
+  loginAttempts.delete(getClientIp(req));
+}
+
+function sha256(input) {
+  return crypto.createHash('sha256').update(String(input || '')).digest('hex');
+}
+
+function getRequestFingerprint(req) {
+  return {
+    ipHash: sha256(getClientIp(req)),
+    userAgentHash: sha256(String(req.headers['user-agent'] || 'unknown'))
+  };
+}
+
+function createSessionRecord(req, userId) {
+  const fingerprint = getRequestFingerprint(req);
+  return {
+    userId,
+    csrfToken: crypto.randomBytes(32).toString('hex'),
+    expiresAt: Date.now() + SESSION_TTL_MS,
+    ipHash: fingerprint.ipHash,
+    userAgentHash: fingerprint.userAgentHash
+  };
+}
+
+function ensureJsonRequest(req) {
+  const contentType = String(req.headers['content-type'] || '').toLowerCase();
+  if (!contentType.includes('application/json')) {
+    throw new Error('Content-Type inválido.');
+  }
+}
+
+function requireCsrf(req, res) {
+  const sessionContext = requireSession(req, res);
+  if (!sessionContext) return null;
+
+  const csrfToken = String(req.headers['x-csrf-token'] || '').trim();
+  if (!csrfToken || csrfToken !== sessionContext.session.csrfToken) {
+    sendJson(res, 403, { error: 'Token CSRF inválido.' });
+    return null;
+  }
+
+  return sessionContext;
+}
+
+function enforceApiRateLimit(req, res, method) {
+  const now = Date.now();
+  const bucket = method === 'GET' ? 'read' : 'write';
+  const windowMs = bucket === 'read' ? API_READ_WINDOW_MS : API_WRITE_WINDOW_MS;
+  const maxRequests = bucket === 'read' ? API_READ_MAX_REQUESTS : API_WRITE_MAX_REQUESTS;
+  const key = `${bucket}:${getClientIp(req)}`;
+  const current = apiRateLimits.get(key);
+
+  if (!current || current.resetAt <= now) {
+    apiRateLimits.set(key, {
+      count: 1,
+      resetAt: now + windowMs
+    });
+    return true;
+  }
+
+  current.count += 1;
+  apiRateLimits.set(key, current);
+
+  if (current.count > maxRequests) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((current.resetAt - now) / 1000))));
+    sendJson(res, 429, { error: 'Muitas requisições. Aguarde um momento e tente novamente.' });
+    return false;
+  }
+
+  return true;
 }

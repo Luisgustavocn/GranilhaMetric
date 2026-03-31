@@ -195,7 +195,7 @@
                   </div>
                 </div>
 
-                <div class="client-selection-section">
+                <div id="client-selection-section" class="client-selection-section">
                   <label>Selecione o Cliente
                     <select id="selected-client">
                       <option value="">Selecione um cliente...</option>
@@ -209,128 +209,148 @@
                   </label>
                 </div>
 
-                <div id="items-section" style="display:none;">
-                  <h3>Itens do Cliente: <span id="current-client-name"></span></h3>
-                  
-                  <div class="multi-client-actions" id="multi-client-actions" style="display:none;">
-                    <p style="margin-bottom: 16px; color: var(--muted);">
-                      📋 <strong>Dica:</strong> Você pode adicionar itens de vários clientes no mesmo caminhão. 
-                      Selecione outro cliente para adicionar mais itens.
-                    </p>
-                    <button id="add-more-clients-btn" class="btn btn-secondary" type="button">
-                      + Adicionar Cliente
-                    </button>
-                    <button id="finish-clients-btn" class="btn btn-primary" type="button">
-                      Finalizar Clientes →
-                    </button>
-                  </div>
-
-                  <form id="cargo-item-form" class="inline-form">
-                    <label>Lata
-                      <select id="can-select" required></select>
-                    </label>
+	                <div id="items-section" style="display:none;">
+	                  <h3>Itens do Cliente: <span id="current-client-name"></span></h3>
+	                  
+	                  <form id="cargo-item-form" class="inline-form">
+	                    <label>Lata
+	                      <select id="can-select" required></select>
+	                    </label>
                     <label>Quantidade
                       <input id="quantity-input" type="number" min="1" value="1" required />
                     </label>
-                    <button type="submit" class="btn btn-primary">Adicionar Item</button>
-                  </form>
+	                    <button type="submit" class="btn btn-primary">Adicionar Item</button>
+	                  </form>
 
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Cliente</th>
-                        <th>Lata</th>
-                        <th>Qtd</th>
-                        <th>Volume unit.</th>
-                        <th>Subtotal</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody id="cargo-body"></tbody>
-                  </table>
-                </div>
+                      <div class="panel-filters compact-panel-filters">
+                        <label>Buscar na carga
+                          <input id="cargo-search-input" type="search" placeholder="Cliente ou produto" />
+                        </label>
+                        <label>Cliente
+                          <select id="cargo-client-filter">
+                            <option value="all">Todos</option>
+                          </select>
+                        </label>
+                        <div class="panel-filter-actions">
+                          <button id="cargo-clear-filters-btn" type="button" class="row-action">Limpar filtros</button>
+                          <span id="cargo-filter-count" class="panel-filter-count">0 item(ns)</span>
+                        </div>
+                      </div>
+
+		                  <div class="cargo-builder-layout">
+	                    <div class="cargo-builder-main">
+	                      <div class="table-wrap table-wrap-medium">
+	                        <table>
+	                          <thead>
+	                            <tr>
+	                              <th id="cargo-client-header">Cliente</th>
+	                              <th>Lata</th>
+	                              <th>Qtd</th>
+	                              <th>Volume unit.</th>
+	                              <th>Subtotal</th>
+	                              <th></th>
+	                            </tr>
+	                          </thead>
+	                          <tbody id="cargo-body"></tbody>
+	                        </table>
+	                      </div>
+		                    </div>
+		                  </div>
+
+                    <div class="items-planning-panel">
+                      <div class="schedule-row">
+                        <label>Data inicial
+                          <input id="order-start-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
+                        </label>
+                        <label>Data final
+                          <input id="order-end-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
+                        </label>
+                        <input id="order-date-input" type="hidden" />
+                        <p id="date-availability-hint" class="hint">Selecione o período para verificar disponibilidade de caminhões.</p>
+                      </div>
+
+                      <div class="calc-mode-switch">
+                        <input type="radio" id="mode-automatic" name="calculationMode" value="automatic" checked />
+                        <label for="mode-automatic">Automático</label>
+                        <input type="radio" id="mode-manual" name="calculationMode" value="manual" />
+                        <label for="mode-manual">Manual</label>
+                      </div>
+
+                      <div id="automatic-calc-panel">
+                        <button id="calculate-btn" class="btn btn-dark">Calcular no modo automático</button>
+                        <div id="calculation-result" class="result-box hidden"></div>
+                      </div>
+
+	                      <div id="manual-calc-panel" class="manual-area hidden">
+                        <h3>Seleção manual de caminhões</h3>
+                        <label>Distribuição da carga
+                          <select id="manual-distribution-type">
+                            <option value="single">Toda carga em 1 caminhão</option>
+                            <option value="multi">Distribuir em mais de 1 caminhão</option>
+                          </select>
+                        </label>
+
+                        <form id="manual-truck-form" class="manual-inline-form">
+                          <label>Caminhão
+                            <select id="manual-truck-select" required></select>
+                          </label>
+                          <button id="manual-calc-btn" type="submit" class="btn btn-primary">Simular manual</button>
+                        </form>
+
+                        <div id="manual-multi-panel" class="hidden">
+                          <div id="manual-allocation-list" class="allocation-list"></div>
+                          <div class="manual-multi-actions">
+                            <button id="add-manual-allocation-btn" type="button" class="row-action">Adicionar caminhão</button>
+                            <button id="manual-multi-calc-btn" type="button" class="btn btn-primary">Simular distribuição manual</button>
+                          </div>
+                        </div>
+
+	                        <div id="manual-result" class="result-box hidden"></div>
+	                      </div>
+	                    </div>
+
+                        <div class="multi-client-actions" id="multi-client-actions" style="display:none;">
+                          <p style="margin-bottom: 16px; color: var(--muted);">
+                            Organize a ordem dos clientes na lista, adicione mais itens e avance quando a carga estiver pronta.
+                          </p>
+                          <button id="add-more-clients-btn" class="btn btn-secondary" type="button">
+                            + Adicionar outro cliente
+                          </button>
+                          <button id="finish-clients-btn" class="btn btn-primary" type="button">
+                            Avançar para resumo →
+                          </button>
+                        </div>
+		                </div>
 
                 <div id="launch-section" style="display:none;">
-                  <div class="schedule-row">
-                    <label>Data inicial
-                      <input id="order-start-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
-                    </label>
-                    <label>Data final
-                      <input id="order-end-date-input" type="date" required onchange="document.getElementById('order-date-input').value = this.value" />
-                    </label>
-                    <input id="order-date-input" type="hidden" />
-                    <p id="date-availability-hint" class="hint">Selecione o período para verificar disponibilidade de caminhões.</p>
-                  </div>
-
-                  <div class="calc-mode-switch">
-                    <input type="radio" id="mode-automatic" name="calculationMode" value="automatic" checked />
-                    <label for="mode-automatic">Automático</label>
-                    <input type="radio" id="mode-manual" name="calculationMode" value="manual" />
-                    <label for="mode-manual">Manual</label>
-                  </div>
-
-                  <div id="automatic-calc-panel">
-                    <button id="calculate-btn" class="btn btn-dark">Calcular no modo automático</button>
-                    <div id="calculation-result" class="result-box hidden"></div>
-                    
-                    <!-- Visualização 3D Integrada -->
-                    <div id="visualization-3d-container" class="visualization-container hidden">
-                      <div class="visualization-header">
-                        <h4>🎨 Visualização 3D da Carga</h4>
-                        <div class="visualization-controls">
-                          <button id="toggle-3d-btn" class="btn btn-secondary" type="button">
-                            <span id="toggle-text">Mostrar 3D</span>
-                          </button>
-                          <button id="reset-3d-btn" class="btn btn-secondary" type="button">🔄 Resetar</button>
-                        </div>
-                      </div>
-                      <div id="visualization-3d" class="visualization-3d"></div>
-                      <div id="visualization-stats" class="visualization-stats">
-                        <div class="stat-item">
-                          <span class="stat-label">Volume Total:</span>
-                          <span class="stat-value" id="viz-volume-total">0.000 m³</span>
-                        </div>
-                        <div class="stat-item">
-                          <span class="stat-label">Volume Real:</span>
-                          <span class="stat-value" id="viz-volume-real">0.000 m³</span>
-                        </div>
-                        <div class="stat-item">
-                          <span class="stat-label">Eficiência:</span>
-                          <span class="stat-value" id="viz-eficiencia">0.0%</span>
-                        </div>
-                        <div class="stat-item">
-                          <span class="stat-label">Ocupação:</span>
-                          <span class="stat-value" id="viz-ocupacao">0.0%</span>
-                        </div>
-                      </div>
+                  <div class="launch-review-head">
+                    <div>
+                      <span class="eyebrow">Etapa Final</span>
+                      <h3>Resumo do pedido e revisão da carga</h3>
                     </div>
+                    <button id="back-to-items-btn" class="btn btn-secondary" type="button">← Voltar para itens</button>
                   </div>
 
-                  <div id="manual-calc-panel" class="manual-area hidden">
-                    <h3>Seleção manual de caminhões</h3>
-                    <label>Distribuição da carga
-                      <select id="manual-distribution-type">
-                        <option value="single">Toda carga em 1 caminhão</option>
-                        <option value="multi">Distribuir em mais de 1 caminhão</option>
-                      </select>
-                    </label>
-
-                    <form id="manual-truck-form" class="manual-inline-form">
-                      <label>Caminhão
-                        <select id="manual-truck-select" required></select>
-                      </label>
-                      <button id="manual-calc-btn" type="submit" class="btn btn-primary">Simular manual</button>
-                    </form>
-
-                    <div id="manual-multi-panel" class="hidden">
-                      <div id="manual-allocation-list" class="allocation-list"></div>
-                      <div class="manual-multi-actions">
-                        <button id="add-manual-allocation-btn" type="button" class="row-action">Adicionar caminhão</button>
-                        <button id="manual-multi-calc-btn" type="button" class="btn btn-primary">Simular distribuição manual</button>
+                  <div class="launch-summary-layout">
+                    <section class="launch-preview-card">
+                      <div class="cargo-preview-head">
+                        <div>
+                          <span class="eyebrow">Apoio Visual</span>
+                          <h4>Previa 3D da carga</h4>
+                        </div>
+                        <button id="toggle-3d-btn" class="btn btn-secondary" type="button" disabled>
+                          <span id="toggle-text">Mostrar 3D</span>
+                        </button>
                       </div>
-                    </div>
+                      <p id="visualization-3d-helper" class="cargo-preview-helper">
+                        Adicione itens para liberar a previa 3D da carga.
+                      </p>
+                      <div id="visualization-3d-container" class="visualization-container hidden">
+                        <iframe id="launch-order-3d-iframe" class="modal-order-3d-iframe" title="Prévia 3D da carga atual" loading="lazy"></iframe>
+                      </div>
+                    </section>
 
-                    <div id="manual-result" class="result-box hidden"></div>
+                    <div id="launch-summary-content" class="launch-summary-card"></div>
                   </div>
 
                   <div class="order-launch-area">
@@ -340,11 +360,32 @@
               </article>
             </section>
 
-            <section id="latas-section" class="view-pane hidden">
-              <article class="card">
-                <h2>Latas cadastradas</h2>
-                <p>Clique em uma lata para ver os detalhes completos.</p>
-                <div class="table-wrap table-wrap-medium">
+	            <section id="latas-section" class="view-pane hidden">
+	              <article class="card">
+	                <h2>Latas cadastradas</h2>
+	                <p>Clique em uma lata para ver os detalhes completos.</p>
+                    <div class="panel-filters">
+                      <label>Busca rápida
+                        <input id="cans-search-input" type="search" placeholder="Nome da lata" />
+                      </label>
+                      <label>Categoria
+                        <select id="cans-category-filter">
+                          <option value="all">Todas</option>
+                        </select>
+                      </label>
+                      <label>Formato
+                        <select id="cans-shape-filter">
+                          <option value="all">Todos</option>
+                          <option value="square">Quadrada</option>
+                          <option value="cylinder">Cilíndrica</option>
+                        </select>
+                      </label>
+                      <div class="panel-filter-actions">
+                        <button id="cans-clear-filters-btn" type="button" class="row-action">Limpar filtros</button>
+                        <span id="cans-filter-count" class="panel-filter-count">0 lata(s)</span>
+                      </div>
+                    </div>
+	                <div class="table-wrap table-wrap-medium">
                   <table>
                     <thead>
                       <tr>
@@ -768,8 +809,8 @@
                     <label class="shape-square">Lado 2 (cm)
                       <input name="side2Cm" type="number" min="0.1" step="0.1" />
                     </label>
-                    <label class="shape-cylinder hidden">Diametro (cm)
-                      <input name="diameterCm" type="number" min="0.1" step="0.1" />
+                    <label class="shape-cylinder hidden">Circunferência (cm)
+                      <input name="circumferenceCm" type="number" min="0.1" step="0.1" />
                     </label>
                     <button class="btn btn-primary" type="submit">Cadastrar lata</button>
                   </form>

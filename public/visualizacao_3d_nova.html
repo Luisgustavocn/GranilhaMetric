@@ -19,6 +19,12 @@
             padding: 20px;
         }
 
+        body.embed-mode {
+            background: transparent;
+            min-height: auto;
+            padding: 0;
+        }
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
@@ -26,6 +32,31 @@
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
+        }
+
+        body.embed-mode .container {
+            max-width: none;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        body.embed-mode header,
+        body.embed-mode .controls,
+        body.embed-mode .info-panel {
+            display: none !important;
+        }
+
+        body.embed-mode .visualization {
+            height: 460px;
+            border-bottom: 0;
+        }
+
+        body.embed-mode .stats {
+            padding: 16px 0 0;
+        }
+
+        body.embed-mode .stat-card {
+            box-shadow: 0 8px 22px rgba(23, 31, 44, 0.08);
         }
 
         header {
@@ -232,7 +263,7 @@
     <div class="container">
         <header>
             <h1>🚛 Visualização 3D de Carga</h1>
-            <div class="subtitle">Sistema inteligente de empacotamento para caminhões</div>
+            <div class="subtitle" id="page-subtitle">Sistema inteligente de empacotamento para caminhões</div>
         </header>
 
         <section class="controls">
@@ -266,7 +297,7 @@
             <div id="canvas-container"></div>
             <div id="loading" class="loading" style="display: none;">
                 <div class="spinner"></div>
-                <div>Processando carga...</div>
+                <div id="loading-text">Processando carga...</div>
             </div>
             <div id="info-panel" class="info-panel" style="display: none;">
                 <div class="info-title">📊 Informações da Carga</div>
@@ -297,8 +328,13 @@
     </div>
 
     <script>
-        // Dados reais dos clientes
-        const CLIENT_DATA = {
+        const VIEW_PARAMS = new URLSearchParams(window.location.search);
+        const IS_EMBED = VIEW_PARAMS.get('embed') === '1';
+        if (IS_EMBED) {
+            document.body.classList.add('embed-mode');
+        }
+
+        const DEFAULT_CLIENT_DATA = {
             'casa-tintas': {
                 name: 'Casa das Tintas',
                 items: [
@@ -380,39 +416,143 @@
             }
         };
 
-        // Variáveis globais
-        let scene, camera, renderer, controls;
-        let truck, cargoGroup;
-        let isLoading = false;
+        const ORDER_PREVIEW_STORAGE_KEY = 'granilha_metric_order_3d_preview';
 
-        // Dimensões do caminhão
+        function loadOrderPreviewData() {
+            try {
+                const raw = window.localStorage.getItem(ORDER_PREVIEW_STORAGE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object' || !parsed.clients || typeof parsed.clients !== 'object') {
+                    return null;
+                }
+                return parsed;
+            } catch (_error) {
+                return null;
+            }
+        }
+
+        const ORDER_PREVIEW_DATA = loadOrderPreviewData();
+        const CLIENT_DATA = ORDER_PREVIEW_DATA?.clients && Object.keys(ORDER_PREVIEW_DATA.clients).length
+            ? ORDER_PREVIEW_DATA.clients
+            : DEFAULT_CLIENT_DATA;
+
         const TRUCK_DIMENSIONS = {
             length: 14.5,
             width: 2.45,
             height: 1.70
         };
 
-        // Inicialização
+        const PACKING_BATCH_SIZE = 40;
+        const ENTRY_ORDER_STRATEGIES = [
+            'footprint',
+            'height',
+            'width',
+            'original',
+            'footprint_reverse',
+            'height_reverse',
+            'width_reverse',
+            'original_reverse'
+        ];
+        const GAP = 0.002;
+        const ORDER_GAP = 0.015;
+        const POSITION_EPSILON = 0.0015;
+        const FLOOR_Y = Math.min(0.015, TRUCK_DIMENSIONS.height * 0.04);
+        const MIN_X_LIMIT = -TRUCK_DIMENSIONS.length / 2 + GAP;
+        const REAR_START_X = TRUCK_DIMENSIONS.length / 2 - GAP;
+        const MIN_Z_EDGE = -TRUCK_DIMENSIONS.width / 2 + GAP;
+        const MAX_Z_EDGE = TRUCK_DIMENSIONS.width / 2 - GAP;
+        const USABLE_HEIGHT = TRUCK_DIMENSIONS.height - FLOOR_Y * 2;
+
+        let scene, camera, renderer;
+        let truck, cargoGroup;
+        let isLoading = false;
+        let currentRenderToken = 0;
+        let loadingStageLabel = 'Processando carga...';
+
+        function populateClientSelect() {
+            const select = document.getElementById('client-select');
+            if (!select) return;
+
+            const options = ['<option value="">Escolha um cliente...</option>'];
+            Object.entries(CLIENT_DATA).forEach(([key, client]) => {
+                options.push(`<option value="${key}">${client.name}</option>`);
+            });
+            options.push('<option value="all">Todos os Clientes</option>');
+            select.innerHTML = options.join('');
+        }
+
+        function applyOrderPreviewHeader() {
+            if (!ORDER_PREVIEW_DATA) return;
+            const subtitle = document.getElementById('page-subtitle');
+            if (subtitle) {
+                subtitle.textContent = `${ORDER_PREVIEW_DATA.title || 'Pedido salvo'} carregado para visualização 3D`;
+            }
+        }
+
+        function hashOrderKey(orderKey) {
+            const normalizedKey = String(orderKey || 'pedido');
+            let hash = 0;
+            for (let index = 0; index < normalizedKey.length; index++) {
+                hash = ((hash << 5) - hash) + normalizedKey.charCodeAt(index);
+                hash |= 0;
+            }
+            return Math.abs(hash);
+        }
+
+        function hslToHex(h, s, l) {
+            const hue = ((h % 360) + 360) % 360 / 360;
+            const saturation = Math.max(0, Math.min(1, s / 100));
+            const lightness = Math.max(0, Math.min(1, l / 100));
+
+            if (saturation === 0) {
+                const gray = Math.round(lightness * 255);
+                return (gray << 16) | (gray << 8) | gray;
+            }
+
+            const q = lightness < 0.5
+                ? lightness * (1 + saturation)
+                : lightness + saturation - lightness * saturation;
+            const p = 2 * lightness - q;
+
+            function hueToRgb(t) {
+                let value = t;
+                if (value < 0) value += 1;
+                if (value > 1) value -= 1;
+                if (value < 1 / 6) return p + (q - p) * 6 * value;
+                if (value < 1 / 2) return q;
+                if (value < 2 / 3) return p + (q - p) * (2 / 3 - value) * 6;
+                return p;
+            }
+
+            const r = Math.round(hueToRgb(hue + 1 / 3) * 255);
+            const g = Math.round(hueToRgb(hue) * 255);
+            const b = Math.round(hueToRgb(hue - 1 / 3) * 255);
+            return (r << 16) | (g << 8) | b;
+        }
+
+        function getOrderColor(orderKey) {
+            const hash = hashOrderKey(orderKey);
+            const hue = (hash * 137.508) % 360;
+            const saturation = 62 + (hash % 14);
+            const lightness = 50 + ((Math.floor(hash / 7)) % 10);
+            return hslToHex(hue, saturation, lightness);
+        }
+
         function init() {
             const container = document.getElementById('canvas-container');
-            
-            // Cena
+            populateClientSelect();
+            applyOrderPreviewHeader();
+
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0xf0f0f0);
             scene.fog = new THREE.Fog(0xf0f0f0, 50, 200);
 
-            // Câmera
-            camera = new THREE.PerspectiveCamera(
-                60, 
-                container.clientWidth / container.clientHeight, 
-                0.1, 
-                1000
-            );
+            camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 1000);
             camera.position.set(15, 10, 15);
             camera.lookAt(0, 0, 0);
 
-            // Renderer
-            renderer = new THREE.WebGLRenderer({ 
+            renderer = new THREE.WebGLRenderer({
                 antialias: true,
                 alpha: false
             });
@@ -423,31 +563,26 @@
             renderer.outputColorSpace = THREE.SRGBColorSpace;
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 1.2;
-            
             container.appendChild(renderer.domElement);
 
-            // Iluminação
             setupLighting();
-
-            // Controles
             setupControls();
-
-            // Criar caminhão
             createTruck();
-
-            // Iniciar animação
             animate();
-
-            // Event listeners
             window.addEventListener('resize', onWindowResize);
+
+            if (ORDER_PREVIEW_DATA) {
+                const select = document.getElementById('client-select');
+                if (select) {
+                    select.value = 'all';
+                }
+                renderCargo();
+            }
         }
 
         function setupLighting() {
-            // Luz ambiente
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-            scene.add(ambientLight);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
-            // Luz principal
             const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
             directionalLight.position.set(20, 30, 20);
             directionalLight.castShadow = true;
@@ -461,28 +596,27 @@
             directionalLight.shadow.camera.bottom = -20;
             scene.add(directionalLight);
 
-            // Luz de preenchimento
             const fillLight = new THREE.DirectionalLight(0x87ceeb, 0.3);
             fillLight.position.set(-10, 15, -10);
             scene.add(fillLight);
 
-            // Luz de contorno
             const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
             rimLight.position.set(0, 10, -20);
             scene.add(rimLight);
         }
 
         function setupControls() {
-            // Controles simples (sem OrbitControls para evitar dependências)
-            let mouseX = 0, mouseY = 0;
-            let targetX = 0, targetY = 0;
+            let mouseX = 0;
+            let mouseY = 0;
+            let targetX = 0;
+            let targetY = 0;
 
             document.addEventListener('mousemove', (event) => {
                 mouseX = (event.clientX / window.innerWidth) * 2 - 1;
                 mouseY = -(event.clientY / window.innerHeight) * 2 + 1;
             });
 
-            function updateCamera() {
+            scene.userData.updateCamera = () => {
                 targetX += (mouseX - targetX) * 0.05;
                 targetY += (mouseY - targetY) * 0.05;
 
@@ -491,64 +625,54 @@
                 camera.position.z = Math.cos(targetX * Math.PI) * radius;
                 camera.position.y = 10 + targetY * 5;
                 camera.lookAt(0, 0, 0);
-            }
-
-            // Adicionar ao loop de animação
-            scene.userData.updateCamera = updateCamera;
+            };
         }
 
         function createTruck() {
             const { length, width, height } = TRUCK_DIMENSIONS;
-            
-            // Grupo do caminhão
             truck = new THREE.Group();
 
-            // Chão do caminhão
             const floorGeometry = new THREE.BoxGeometry(length, 0.2, width);
-            const floorMaterial = new THREE.MeshStandardMaterial({ 
+            const floorMaterial = new THREE.MeshStandardMaterial({
                 color: 0x8b4513,
                 roughness: 0.8,
                 metalness: 0.2
             });
             const floor = new THREE.Mesh(floorGeometry, floorMaterial);
             floor.position.y = 0;
-            floor.receiveShadow = true;
             floor.castShadow = true;
+            floor.receiveShadow = true;
             truck.add(floor);
 
-            // Paredes (wireframe para visualização)
-            const wallMaterial = new THREE.MeshBasicMaterial({ 
-                color: 0x666666, 
+            const wallMaterial = new THREE.MeshBasicMaterial({
+                color: 0x666666,
                 wireframe: true,
                 transparent: true,
                 opacity: 0.3
             });
 
-            // Paredes laterais
-            const wallGeometry = new THREE.BoxGeometry(0.1, height, width);
-            const leftWall = new THREE.Mesh(wallGeometry, wallMaterial);
-            leftWall.position.set(-length/2, height/2, 0);
-            truck.add(leftWall);
-
-            const rightWall = new THREE.Mesh(wallGeometry, wallMaterial);
-            rightWall.position.set(length/2, height/2, 0);
-            truck.add(rightWall);
-
-            // Paredes frontais
-            const frontWallGeometry = new THREE.BoxGeometry(length, height, 0.1);
-            const frontWall = new THREE.Mesh(frontWallGeometry, wallMaterial);
-            frontWall.position.set(0, height/2, -width/2);
+            const rearFrontWallGeometry = new THREE.BoxGeometry(0.1, height, width);
+            const frontWall = new THREE.Mesh(rearFrontWallGeometry, wallMaterial);
+            frontWall.position.set(-length / 2, height / 2, 0);
             truck.add(frontWall);
 
-            const backWall = new THREE.Mesh(frontWallGeometry, wallMaterial);
-            backWall.position.set(0, height/2, width/2);
-            truck.add(backWall);
+            const rearWall = new THREE.Mesh(rearFrontWallGeometry, wallMaterial);
+            rearWall.position.set(length / 2, height / 2, 0);
+            truck.add(rearWall);
+
+            const sideWallGeometry = new THREE.BoxGeometry(length, height, 0.1);
+            const leftWall = new THREE.Mesh(sideWallGeometry, wallMaterial);
+            leftWall.position.set(0, height / 2, -width / 2);
+            truck.add(leftWall);
+
+            const rightWall = new THREE.Mesh(sideWallGeometry, wallMaterial);
+            rightWall.position.set(0, height / 2, width / 2);
+            truck.add(rightWall);
 
             scene.add(truck);
 
-            // Chão do ambiente
             const groundGeometry = new THREE.PlaneGeometry(50, 50);
-            const groundMaterial = new THREE.MeshStandardMaterial({ 
+            const groundMaterial = new THREE.MeshStandardMaterial({
                 color: 0xe0e0e0,
                 roughness: 0.8,
                 metalness: 0.1
@@ -559,282 +683,1208 @@
             ground.receiveShadow = true;
             scene.add(ground);
 
-            // Grade de referência
-            const gridHelper = new THREE.GridHelper(50, 50, 0xcccccc, 0xeeeeee);
-            scene.add(gridHelper);
+            scene.add(new THREE.GridHelper(50, 50, 0xcccccc, 0xeeeeee));
         }
 
-        function createCargo(clientKey) {
-            // Limpar carga anterior
+        function nextFrame() {
+            return new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+
+        function getClientDataForSelection(clientKey) {
+            if (clientKey === 'all') {
+                return {
+                    name: 'Todos os Clientes',
+                    items: Object.values(CLIENT_DATA).flatMap((client) =>
+                        client.items.map((item) => ({ ...item }))
+                    )
+                };
+            }
+
+            return CLIENT_DATA[clientKey];
+        }
+
+        function collectItems(clientKey) {
+            const items = [];
+
+            if (clientKey === 'all') {
+                Object.entries(CLIENT_DATA).forEach(([key, client]) => {
+                    client.items.forEach((item, itemIndex) => {
+                        for (let index = 0; index < item.quantity; index++) {
+                            items.push({
+                                name: item.name,
+                                dimensions: [...item.dimensions],
+                                color: getOrderColor(key),
+                                clientKey: key,
+                                clientName: client.name,
+                                sourceIndex: itemIndex,
+                                sourceKey: `${key}:${itemIndex}:${item.name}`
+                            });
+                        }
+                    });
+                });
+                return items;
+            }
+
+            const client = CLIENT_DATA[clientKey];
+            client.items.forEach((item, itemIndex) => {
+                for (let index = 0; index < item.quantity; index++) {
+                    items.push({
+                        name: item.name,
+                        dimensions: [...item.dimensions],
+                        color: getOrderColor(clientKey),
+                        clientKey,
+                        clientName: client.name,
+                        sourceIndex: itemIndex,
+                        sourceKey: `${clientKey}:${itemIndex}:${item.name}`
+                    });
+                }
+            });
+            return items;
+        }
+
+        function buildGroupsForClient(items, clientKey) {
+            const groups = new Map();
+
+            items
+                .filter((item) => item.clientKey === clientKey)
+                .forEach((item) => {
+                    const key = item.sourceKey || `${item.name}:${item.dimensions.join('x')}`;
+                    if (!groups.has(key)) {
+                        const [width, height, depth] = item.dimensions;
+                        groups.set(key, {
+                            key,
+                            name: item.name,
+                            clientKey,
+                            clientName: item.clientName,
+                            color: item.color,
+                            dimensions: [...item.dimensions],
+                            itemWidth: width,
+                            itemHeight: height,
+                            itemDepth: depth,
+                            footprint: width * depth,
+                            volume: width * height * depth,
+                            orderIndex: Number(item.sourceIndex || 0),
+                            items: []
+                        });
+                    }
+                    groups.get(key).items.push(item);
+                });
+
+            return Array.from(groups.values()).sort((a, b) => a.orderIndex - b.orderIndex);
+        }
+
+        function buildClientBlocks(clientKey, allItems) {
+            const clientKeys = clientKey === 'all' ? Object.keys(CLIENT_DATA) : [clientKey];
+            const blocks = clientKeys.map((key) => {
+                const groups = buildGroupsForClient(allItems, key);
+                const totalVolume = groups.reduce((sum, group) => sum + group.volume * group.items.length, 0);
+                const totalItems = groups.reduce((sum, group) => sum + group.items.length, 0);
+                const weightedFootprint = groups.reduce((sum, group) => sum + (group.footprint * group.items.length), 0);
+                const minFloorSpan = groups.reduce((minValue, group) => {
+                    return Math.min(minValue, Math.min(group.itemWidth, group.itemDepth));
+                }, Number.POSITIVE_INFINITY);
+                const maxGroupWidth = groups.reduce((maxValue, group) => Math.max(maxValue, group.itemWidth), 0);
+                const maxFootprint = groups.reduce((maxValue, group) => Math.max(maxValue, group.footprint), 0);
+
+                return {
+                    clientKey: key,
+                    clientName: CLIENT_DATA[key].name,
+                    color: getOrderColor(key),
+                    groups,
+                    totalVolume,
+                    averageFootprint: totalItems ? weightedFootprint / totalItems : 0,
+                    maxFootprint,
+                    minFloorSpan: Number.isFinite(minFloorSpan) ? minFloorSpan : 0,
+                    maxGroupWidth,
+                    minimalLength: Math.max(
+                        maxGroupWidth + GAP * 2,
+                        totalVolume / Math.max((MAX_Z_EDGE - MIN_Z_EDGE) * USABLE_HEIGHT, POSITION_EPSILON)
+                    )
+                };
+            });
+
+            return blocks;
+        }
+
+        function getUniqueOrientations(width, height, depth) {
+            return [
+                { width, height, depth, rotated: false },
+                { width: depth, height, depth: width, rotated: true }
+            ].filter((orientation, index, list) => {
+                return index === list.findIndex((candidate) =>
+                    Math.abs(candidate.width - orientation.width) <= POSITION_EPSILON &&
+                    Math.abs(candidate.depth - orientation.depth) <= POSITION_EPSILON
+                );
+            });
+        }
+
+        function scoreLayout(layout, minFloorSpan) {
+            const fragments = layout.map((slot) => {
+                const width = slot.xMax - slot.xMin;
+                const depth = slot.zMax - slot.zMin;
+                return {
+                    area: width * depth,
+                    minSpan: Math.min(width, depth)
+                };
+            });
+
+            return {
+                fragmentCount: fragments.length,
+                unusableCount: fragments.filter((fragment) => fragment.minSpan < minFloorSpan - POSITION_EPSILON).length,
+                maxSpan: fragments.reduce((value, fragment) => Math.max(value, fragment.minSpan), 0),
+                maxArea: fragments.reduce((value, fragment) => Math.max(value, fragment.area), 0)
+            };
+        }
+
+        function chooseBestRemainderLayout(layouts, minFloorSpan) {
+            return layouts.reduce((bestLayout, currentLayout) => {
+                if (!bestLayout) {
+                    return currentLayout;
+                }
+
+                const bestScore = scoreLayout(bestLayout, minFloorSpan);
+                const currentScore = scoreLayout(currentLayout, minFloorSpan);
+                if (currentScore.fragmentCount !== bestScore.fragmentCount) {
+                    return currentScore.fragmentCount < bestScore.fragmentCount ? currentLayout : bestLayout;
+                }
+                if (currentScore.unusableCount !== bestScore.unusableCount) {
+                    return currentScore.unusableCount < bestScore.unusableCount ? currentLayout : bestLayout;
+                }
+                if (Math.abs(currentScore.maxSpan - bestScore.maxSpan) > POSITION_EPSILON) {
+                    return currentScore.maxSpan > bestScore.maxSpan ? currentLayout : bestLayout;
+                }
+                return currentScore.maxArea > bestScore.maxArea + POSITION_EPSILON ? currentLayout : bestLayout;
+            }, null) || [];
+        }
+
+        function getLateralAnchors(slot, placement) {
+            const rearAnchors = [
+                slot.zMin,
+                slot.zMax - placement.depth
+            ];
+
+            return rearAnchors.filter((anchor, index, list) => {
+                return anchor >= slot.zMin - POSITION_EPSILON &&
+                    anchor + placement.depth <= slot.zMax + POSITION_EPSILON &&
+                    index === list.findIndex((candidate) => Math.abs(candidate - anchor) <= POSITION_EPSILON);
+            });
+        }
+
+        function buildRemainderLayouts(slot, placement, usedZMin) {
+            const usedXMax = slot.xMax;
+            const usedXMin = slot.xMax - placement.width;
+            const usedZMax = slot.zMin + placement.depth;
+            const actualUsedZMin = usedZMin;
+            const actualUsedZMax = usedZMin + placement.depth;
+
+            const widthFirst = [];
+            if (usedXMin - slot.xMin > POSITION_EPSILON) {
+                widthFirst.push({
+                    xMin: slot.xMin,
+                    xMax: usedXMin,
+                    zMin: slot.zMin,
+                    zMax: slot.zMax,
+                    baseY: slot.baseY,
+                    stackLevel: slot.stackLevel,
+                    groupKey: slot.groupKey,
+                    clientKey: slot.clientKey
+                });
+            }
+            if (actualUsedZMin - slot.zMin > POSITION_EPSILON) {
+                widthFirst.push({
+                    xMin: usedXMin,
+                    xMax: slot.xMax,
+                    zMin: slot.zMin,
+                    zMax: actualUsedZMin,
+                    baseY: slot.baseY,
+                    stackLevel: slot.stackLevel,
+                    groupKey: slot.groupKey,
+                    clientKey: slot.clientKey
+                });
+            }
+            if (slot.zMax - actualUsedZMax > POSITION_EPSILON) {
+                widthFirst.push({
+                    xMin: usedXMin,
+                    xMax: slot.xMax,
+                    zMin: actualUsedZMax,
+                    zMax: slot.zMax,
+                    baseY: slot.baseY,
+                    stackLevel: slot.stackLevel,
+                    groupKey: slot.groupKey,
+                    clientKey: slot.clientKey
+                });
+            }
+
+            const depthFirst = [];
+            if (actualUsedZMin - slot.zMin > POSITION_EPSILON) {
+                depthFirst.push({
+                    xMin: slot.xMin,
+                    xMax: slot.xMax,
+                    zMin: slot.zMin,
+                    zMax: actualUsedZMin,
+                    baseY: slot.baseY,
+                    stackLevel: slot.stackLevel,
+                    groupKey: slot.groupKey,
+                    clientKey: slot.clientKey
+                });
+            }
+            if (slot.zMax - actualUsedZMax > POSITION_EPSILON) {
+                depthFirst.push({
+                    xMin: slot.xMin,
+                    xMax: slot.xMax,
+                    zMin: actualUsedZMax,
+                    zMax: slot.zMax,
+                    baseY: slot.baseY,
+                    stackLevel: slot.stackLevel,
+                    groupKey: slot.groupKey,
+                    clientKey: slot.clientKey
+                });
+            }
+            if (usedXMin - slot.xMin > POSITION_EPSILON) {
+                depthFirst.push({
+                    xMin: slot.xMin,
+                    xMax: usedXMin,
+                    zMin: actualUsedZMin,
+                    zMax: actualUsedZMax,
+                    baseY: slot.baseY,
+                    stackLevel: slot.stackLevel,
+                    groupKey: slot.groupKey,
+                    clientKey: slot.clientKey
+                });
+            }
+
+            return {
+                usedXMin,
+                usedXMax,
+                usedZMin: actualUsedZMin,
+                usedZMax: actualUsedZMax,
+                layouts: [widthFirst, depthFirst]
+            };
+        }
+
+        function nearlyEqual(a, b) {
+            return Math.abs(a - b) <= POSITION_EPSILON;
+        }
+
+        function rangesTouch(minA, maxA, minB, maxB) {
+            return Math.abs(maxA - minB) <= POSITION_EPSILON || Math.abs(maxB - minA) <= POSITION_EPSILON;
+        }
+
+        function buildMergedSlot(state, slotIndex) {
+            const seedSlot = state.slots[slotIndex];
+            const consumedIndexes = new Set([slotIndex]);
+            const mergedSlot = {
+                xMin: seedSlot.xMin,
+                xMax: seedSlot.xMax,
+                zMin: seedSlot.zMin,
+                zMax: seedSlot.zMax,
+                baseY: seedSlot.baseY,
+                stackLevel: seedSlot.stackLevel,
+                groupKey: seedSlot.groupKey,
+                clientKey: seedSlot.clientKey
+            };
+
+            let changed = true;
+            while (changed) {
+                changed = false;
+
+                for (let index = 0; index < state.slots.length; index++) {
+                    if (consumedIndexes.has(index)) {
+                        continue;
+                    }
+
+                    const slot = state.slots[index];
+                    if (!nearlyEqual(slot.baseY, mergedSlot.baseY) || slot.stackLevel !== mergedSlot.stackLevel) {
+                        continue;
+                    }
+
+                    if (
+                        nearlyEqual(slot.xMin, mergedSlot.xMin) &&
+                        nearlyEqual(slot.xMax, mergedSlot.xMax) &&
+                        rangesTouch(mergedSlot.zMin, mergedSlot.zMax, slot.zMin, slot.zMax)
+                    ) {
+                        mergedSlot.zMin = Math.min(mergedSlot.zMin, slot.zMin);
+                        mergedSlot.zMax = Math.max(mergedSlot.zMax, slot.zMax);
+                        consumedIndexes.add(index);
+                        changed = true;
+                        continue;
+                    }
+
+                    if (
+                        nearlyEqual(slot.zMin, mergedSlot.zMin) &&
+                        nearlyEqual(slot.zMax, mergedSlot.zMax) &&
+                        rangesTouch(mergedSlot.xMin, mergedSlot.xMax, slot.xMin, slot.xMax)
+                    ) {
+                        mergedSlot.xMin = Math.min(mergedSlot.xMin, slot.xMin);
+                        mergedSlot.xMax = Math.max(mergedSlot.xMax, slot.xMax);
+                        consumedIndexes.add(index);
+                        changed = true;
+                    }
+                }
+            }
+
+            return {
+                slot: mergedSlot,
+                slotIndexes: [...consumedIndexes].sort((a, b) => b - a)
+            };
+        }
+
+        function previewPlacement(slot, entry, maxLayers = Infinity) {
+            const supportWidth = slot.xMax - slot.xMin;
+            const supportDepth = slot.zMax - slot.zMin;
+            let best = null;
+
+            if (slot.baseY + entry.itemHeight > TRUCK_DIMENSIONS.height - FLOOR_Y + POSITION_EPSILON) {
+                return null;
+            }
+
+            for (const orientation of getUniqueOrientations(entry.itemWidth, entry.itemHeight, entry.itemDepth)) {
+                if (orientation.width > supportWidth + POSITION_EPSILON || orientation.depth > supportDepth + POSITION_EPSILON) {
+                    continue;
+                }
+
+                if (slot.stackLevel + 1 > maxLayers) {
+                    continue;
+                }
+
+                const placement = {
+                    width: orientation.width,
+                    height: entry.itemHeight,
+                    depth: orientation.depth,
+                    rotated: orientation.rotated,
+                    y: slot.baseY + entry.itemHeight / 2,
+                    baseY: slot.baseY,
+                    layer: slot.baseY <= FLOOR_Y + POSITION_EPSILON ? 'fundo_chao' : 'fundo_empilhado',
+                    supportArea: supportWidth * supportDepth,
+                    minSupportSpan: Math.min(supportWidth, supportDepth),
+                    wasteArea: supportWidth * supportDepth - orientation.width * orientation.depth,
+                    topY: slot.baseY + entry.itemHeight,
+                    stackLevel: slot.stackLevel + 1
+                };
+
+                if (
+                    !best ||
+                    placement.wasteArea < best.wasteArea - POSITION_EPSILON ||
+                    (
+                        Math.abs(placement.wasteArea - best.wasteArea) <= POSITION_EPSILON &&
+                        placement.depth < best.depth - POSITION_EPSILON
+                    )
+                ) {
+                    best = placement;
+                }
+            }
+
+            return best;
+        }
+
+        function getBestAnchorLayout(state, slot, placement) {
+            const lateralAnchors = slot.baseY <= FLOOR_Y + POSITION_EPSILON
+                ? getLateralAnchors(slot, placement)
+                : [slot.zMin];
+            let bestAnchorLayout = null;
+
+            lateralAnchors.forEach((anchorZMin) => {
+                const layoutCandidate = buildRemainderLayouts(slot, placement, anchorZMin);
+                const remainderLayout = chooseBestRemainderLayout(layoutCandidate.layouts, state.minFloorSpan);
+                const centerZ = anchorZMin + placement.depth / 2;
+                const layoutScore = scoreLayout(remainderLayout, state.minFloorSpan);
+                const anchorRecord = {
+                    ...layoutCandidate,
+                    remainders: remainderLayout,
+                    centerZ,
+                    layoutScore
+                };
+
+                if (!bestAnchorLayout) {
+                    bestAnchorLayout = anchorRecord;
+                    return;
+                }
+
+                if (layoutScore.fragmentCount !== bestAnchorLayout.layoutScore.fragmentCount) {
+                    if (layoutScore.fragmentCount < bestAnchorLayout.layoutScore.fragmentCount) {
+                        bestAnchorLayout = anchorRecord;
+                    }
+                    return;
+                }
+
+                if (layoutScore.unusableCount !== bestAnchorLayout.layoutScore.unusableCount) {
+                    if (layoutScore.unusableCount < bestAnchorLayout.layoutScore.unusableCount) {
+                        bestAnchorLayout = anchorRecord;
+                    }
+                    return;
+                }
+
+                if (Math.abs(layoutScore.maxSpan - bestAnchorLayout.layoutScore.maxSpan) > POSITION_EPSILON) {
+                    if (layoutScore.maxSpan > bestAnchorLayout.layoutScore.maxSpan) {
+                        bestAnchorLayout = anchorRecord;
+                    }
+                    return;
+                }
+
+                if (layoutScore.maxArea > bestAnchorLayout.layoutScore.maxArea + POSITION_EPSILON) {
+                    bestAnchorLayout = anchorRecord;
+                }
+            });
+
+            return bestAnchorLayout;
+        }
+
+        function isBetterFloorCandidate(current, best) {
+            if (!best) {
+                return true;
+            }
+
+            if (Math.abs(current.clusterGap - best.clusterGap) > POSITION_EPSILON) {
+                return current.clusterGap < best.clusterGap;
+            }
+            if (current.anchorLayout.layoutScore.fragmentCount !== best.anchorLayout.layoutScore.fragmentCount) {
+                return current.anchorLayout.layoutScore.fragmentCount < best.anchorLayout.layoutScore.fragmentCount;
+            }
+            if (Math.abs(current.slot.xMax - best.slot.xMax) > POSITION_EPSILON) {
+                return current.slot.xMax > best.slot.xMax;
+            }
+            if (current.anchorLayout.layoutScore.unusableCount !== best.anchorLayout.layoutScore.unusableCount) {
+                return current.anchorLayout.layoutScore.unusableCount < best.anchorLayout.layoutScore.unusableCount;
+            }
+            if (Math.abs(current.anchorLayout.layoutScore.maxSpan - best.anchorLayout.layoutScore.maxSpan) > POSITION_EPSILON) {
+                return current.anchorLayout.layoutScore.maxSpan > best.anchorLayout.layoutScore.maxSpan;
+            }
+            if (Math.abs(current.placement.supportArea - best.placement.supportArea) > POSITION_EPSILON) {
+                return current.placement.supportArea > best.placement.supportArea;
+            }
+            return current.placement.wasteArea < best.placement.wasteArea - POSITION_EPSILON;
+        }
+
+        function isBetterTopCandidate(current, best) {
+            if (!best) {
+                return true;
+            }
+
+            if (current.placement.stackLevel !== best.placement.stackLevel) {
+                return current.placement.stackLevel < best.placement.stackLevel;
+            }
+            if (current.sameClient !== best.sameClient) {
+                return current.sameClient;
+            }
+            if (Math.abs(current.clusterGap - best.clusterGap) > POSITION_EPSILON) {
+                return current.clusterGap < best.clusterGap;
+            }
+            if (Math.abs(current.placement.topY - best.placement.topY) > POSITION_EPSILON) {
+                return current.placement.topY < best.placement.topY;
+            }
+            if (current.sameGroup !== best.sameGroup) {
+                return current.sameGroup;
+            }
+            if (Math.abs(current.placement.supportArea - best.placement.supportArea) > POSITION_EPSILON) {
+                return current.placement.supportArea > best.placement.supportArea;
+            }
+            return current.placement.wasteArea < best.placement.wasteArea - POSITION_EPSILON;
+        }
+
+        function getCandidateClusterGap(state, candidate) {
+            const anchor = candidate.anchorLayout;
+            if (!anchor) {
+                return Number.POSITIVE_INFINITY;
+            }
+
+            if (state.clusterMinX === null || state.clusterMaxX === null) {
+                return 0;
+            }
+
+            const clusterMinX = state.clusterMinX;
+            const clusterMaxX = state.clusterMaxX;
+            if (anchor.usedXMax < clusterMinX - POSITION_EPSILON) {
+                return clusterMinX - anchor.usedXMax;
+            }
+            if (anchor.usedXMin > clusterMaxX + POSITION_EPSILON) {
+                return anchor.usedXMin - clusterMaxX;
+            }
+            return 0;
+        }
+
+        function findBestFloorCandidate(state, entry) {
+            let best = null;
+
+            for (let slotIndex = 0; slotIndex < state.slots.length; slotIndex++) {
+                const merged = buildMergedSlot(state, slotIndex);
+                const slot = merged.slot;
+                if (slot.baseY > FLOOR_Y + POSITION_EPSILON) {
+                    continue;
+                }
+
+                const placement = previewPlacement(slot, entry);
+                if (!placement) {
+                    continue;
+                }
+
+                const candidate = {
+                    slotIndexes: merged.slotIndexes,
+                    slot,
+                    placement,
+                    anchorLayout: getBestAnchorLayout(state, slot, placement)
+                };
+                candidate.clusterGap = getCandidateClusterGap(state, candidate);
+
+                if (candidate.anchorLayout && isBetterFloorCandidate(candidate, best)) {
+                    best = candidate;
+                }
+            }
+
+            return best;
+        }
+
+        function findBestTopCandidate(state, entry, maxLayers = Infinity) {
+            let best = null;
+
+            for (let slotIndex = 0; slotIndex < state.slots.length; slotIndex++) {
+                const merged = buildMergedSlot(state, slotIndex);
+                const slot = merged.slot;
+                if (slot.baseY <= FLOOR_Y + POSITION_EPSILON) {
+                    continue;
+                }
+
+                const placement = previewPlacement(slot, entry, maxLayers);
+                if (!placement) {
+                    continue;
+                }
+
+                const candidate = {
+                    slotIndexes: merged.slotIndexes,
+                    slot,
+                    placement,
+                    anchorLayout: getBestAnchorLayout(state, slot, placement),
+                    sameGroup: slot.groupKey === entry.groupKey,
+                    sameClient: slot.clientKey === state.clientKey
+                };
+                candidate.clusterGap = getCandidateClusterGap(state, candidate);
+
+                if (isBetterTopCandidate(candidate, best)) {
+                    best = candidate;
+                }
+            }
+
+            return best;
+        }
+
+        function placeCandidate(state, candidate, groupKey) {
+            const slot = candidate.slot;
+            const slotIndexes = Array.isArray(candidate.slotIndexes) ? candidate.slotIndexes : [];
+            slotIndexes.forEach((index) => {
+                state.slots.splice(index, 1);
+            });
+            const bestAnchorLayout = candidate.anchorLayout || getBestAnchorLayout(state, slot, candidate.placement);
+
+            const {
+                usedXMin,
+                usedXMax,
+                usedZMin,
+                usedZMax,
+                remainders
+            } = bestAnchorLayout;
+            remainders.forEach((remainder) => state.slots.push(remainder));
+
+            const nextStackLevel = slot.stackLevel + 1;
+            if (slot.baseY + candidate.placement.height < TRUCK_DIMENSIONS.height - FLOOR_Y - POSITION_EPSILON) {
+                state.slots.push({
+                    xMin: usedXMin,
+                    xMax: usedXMax,
+                    zMin: usedZMin,
+                    zMax: usedZMax,
+                    baseY: slot.baseY + candidate.placement.height,
+                    stackLevel: nextStackLevel,
+                    groupKey,
+                    clientKey: state.clientKey
+                });
+            }
+
+            if (slot.baseY <= FLOOR_Y + POSITION_EPSILON && slot.groupKey === state.floorGroupKey) {
+                state.frontEdgeX = Math.min(state.frontEdgeX, usedXMin);
+            }
+            state.clusterMinX = state.clusterMinX === null ? usedXMin : Math.min(state.clusterMinX, usedXMin);
+            state.clusterMaxX = state.clusterMaxX === null ? usedXMax : Math.max(state.clusterMaxX, usedXMax);
+            state.maxStackLevel = Math.max(state.maxStackLevel, nextStackLevel);
+
+            return {
+                x: (usedXMin + usedXMax) / 2,
+                y: candidate.placement.y,
+                z: (usedZMin + usedZMax) / 2,
+                width: candidate.placement.width,
+                height: candidate.placement.height,
+                depth: candidate.placement.depth,
+                rotated: candidate.placement.rotated,
+                layer: candidate.placement.layer,
+                stackLevel: candidate.placement.stackLevel
+            };
+        }
+
+        function buildStateForBlock(block, rearX, frontX) {
+            const floorGroupKey = `__floor__:${block.clientKey}`;
+            return {
+                clientKey: block.clientKey,
+                clientName: block.clientName,
+                rearX,
+                frontX,
+                frontEdgeX: rearX,
+                clusterMinX: null,
+                clusterMaxX: null,
+                minFloorSpan: block.minFloorSpan,
+                averageFootprint: block.averageFootprint,
+                largeFootprintThreshold: Math.max(block.averageFootprint * 1.15, block.maxFootprint * 0.55),
+                floorGroupKey,
+                externalSupportGapLimit: Math.max(block.maxGroupWidth * 0.4, block.minFloorSpan * 0.85, 0.14),
+                maxStackLevel: 0,
+                slots: [
+                    {
+                        xMin: frontX,
+                        xMax: rearX,
+                        zMin: MIN_Z_EDGE,
+                        zMax: MAX_Z_EDGE,
+                        baseY: FLOOR_Y,
+                        stackLevel: 0,
+                        groupKey: floorGroupKey,
+                        clientKey: block.clientKey
+                    }
+                ]
+            };
+        }
+
+        function buildEntriesForBlock(block, strategy = 'footprint') {
+            const entries = [];
+            const reverseOrder = strategy.endsWith('_reverse');
+            const baseStrategy = reverseOrder ? strategy.replace('_reverse', '') : strategy;
+
+            const orderedGroups = [...block.groups].sort((a, b) => {
+                if (baseStrategy === 'original') {
+                    return reverseOrder
+                        ? (
+                            b.orderIndex - a.orderIndex ||
+                            b.footprint - a.footprint ||
+                            b.volume - a.volume
+                        )
+                        : (
+                            a.orderIndex - b.orderIndex ||
+                            b.footprint - a.footprint ||
+                            b.volume - a.volume
+                        );
+                }
+
+                if (baseStrategy === 'height') {
+                    return reverseOrder
+                        ? (
+                            a.itemHeight - b.itemHeight ||
+                            b.footprint - a.footprint ||
+                            b.volume - a.volume ||
+                            a.orderIndex - b.orderIndex
+                        )
+                        : (
+                            b.itemHeight - a.itemHeight ||
+                            b.footprint - a.footprint ||
+                            b.volume - a.volume ||
+                            a.orderIndex - b.orderIndex
+                        );
+                }
+
+                if (baseStrategy === 'width') {
+                    return reverseOrder
+                        ? (
+                            Math.max(a.itemWidth, a.itemDepth) - Math.max(b.itemWidth, b.itemDepth) ||
+                            b.footprint - a.footprint ||
+                            b.volume - a.volume ||
+                            a.orderIndex - b.orderIndex
+                        )
+                        : (
+                            Math.max(b.itemWidth, b.itemDepth) - Math.max(a.itemWidth, a.itemDepth) ||
+                            b.footprint - a.footprint ||
+                            b.volume - a.volume ||
+                            a.orderIndex - b.orderIndex
+                        );
+                }
+
+                return reverseOrder
+                    ? (
+                        a.footprint - b.footprint ||
+                        a.volume - b.volume ||
+                        a.itemHeight - b.itemHeight ||
+                        a.orderIndex - b.orderIndex
+                    )
+                    : (
+                        b.footprint - a.footprint ||
+                        b.volume - a.volume ||
+                        b.itemHeight - a.itemHeight ||
+                        a.orderIndex - b.orderIndex
+                    );
+            });
+
+            orderedGroups.forEach((group) => {
+                group.items.forEach((item) => {
+                    entries.push({
+                        item,
+                        groupKey: group.key,
+                        itemWidth: group.itemWidth,
+                        itemHeight: group.itemHeight,
+                        itemDepth: group.itemDepth,
+                        footprint: group.footprint,
+                        volume: group.volume,
+                        orderIndex: group.orderIndex
+                    });
+                });
+            });
+
+            return entries;
+        }
+
+        function choosePlacementForEntry(state, entry, compactMode = false, aggressiveMode = false, rescueMode = false) {
+            let floorCandidate = findBestFloorCandidate(state, entry);
+            let topCandidate = findBestTopCandidate(state, entry, Infinity);
+            const isLargeItem = entry.footprint >= state.largeFootprintThreshold - POSITION_EPSILON;
+
+            if (
+                floorCandidate &&
+                state.clusterMinX !== null &&
+                floorCandidate.clusterGap > state.externalSupportGapLimit + POSITION_EPSILON
+            ) {
+                floorCandidate = null;
+            }
+
+            if (
+                topCandidate &&
+                !topCandidate.sameClient &&
+                topCandidate.clusterGap > state.externalSupportGapLimit + POSITION_EPSILON
+            ) {
+                topCandidate = null;
+            }
+
+            if (floorCandidate && topCandidate) {
+                if (isLargeItem) {
+                    return placeCandidate(state, floorCandidate, entry.groupKey);
+                }
+
+                const floorExpandsFront = floorCandidate.anchorLayout.usedXMin < state.frontEdgeX - POSITION_EPSILON;
+                const floorCreatesFragments = floorCandidate.anchorLayout.layoutScore.fragmentCount > 1;
+                const floorCreatesUnusable = floorCandidate.anchorLayout.layoutScore.unusableCount > 0;
+                const topIsClose = topCandidate.sameClient &&
+                    topCandidate.clusterGap <= state.externalSupportGapLimit + POSITION_EPSILON;
+                const topUsesBroaderBase = topCandidate.placement.supportArea >
+                    (entry.itemWidth * entry.itemDepth) + POSITION_EPSILON;
+                const shouldUseTopToRescueLength = topIsClose && topUsesBroaderBase &&
+                    (floorExpandsFront || floorCreatesFragments || floorCreatesUnusable);
+
+                if ((aggressiveMode || rescueMode) && shouldUseTopToRescueLength) {
+                    return placeCandidate(state, topCandidate, entry.groupKey);
+                }
+
+                return placeCandidate(state, floorCandidate, entry.groupKey);
+            }
+
+            return floorCandidate
+                ? placeCandidate(state, floorCandidate, entry.groupKey)
+                : topCandidate
+                    ? placeCandidate(state, topCandidate, entry.groupKey)
+                    : null;
+        }
+
+        function isPackingResultBetter(current, best) {
+            if (!best) {
+                return true;
+            }
+            if (current.placements.length !== best.placements.length) {
+                return current.placements.length > best.placements.length;
+            }
+            if (current.maxStackLevel !== best.maxStackLevel) {
+                return current.maxStackLevel < best.maxStackLevel;
+            }
+            if (Math.abs(current.stackHeightPenalty - best.stackHeightPenalty) > POSITION_EPSILON) {
+                return current.stackHeightPenalty < best.stackHeightPenalty;
+            }
+            if ((current.layerStats.fundo_chao || 0) !== (best.layerStats.fundo_chao || 0)) {
+                return (current.layerStats.fundo_chao || 0) > (best.layerStats.fundo_chao || 0);
+            }
+            if (Math.abs(current.usedLength - best.usedLength) > POSITION_EPSILON) {
+                return current.usedLength < best.usedLength;
+            }
+            if ((current.layerStats.fundo_empilhado || 0) !== (best.layerStats.fundo_empilhado || 0)) {
+                return (current.layerStats.fundo_empilhado || 0) < (best.layerStats.fundo_empilhado || 0);
+            }
+            return false;
+        }
+
+        function createBoxMesh(item, position) {
+            const geometry = new THREE.BoxGeometry(position.width, position.height, position.depth);
+            const material = new THREE.MeshStandardMaterial({
+                color: item.color,
+                roughness: 0.4,
+                metalness: 0.1,
+                transparent: false,
+                opacity: 0.95
+            });
+
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.position.set(position.x, position.y, position.z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            mesh.userData = {
+                name: item.name,
+                clientName: item.clientName,
+                dimensions: [position.width, position.height, position.depth],
+                layer: position.layer,
+                rotated: Boolean(position.rotated),
+                stackLevel: position.stackLevel
+            };
+
+            const edgesGeometry = new THREE.EdgesGeometry(geometry);
+            const edgesMaterial = new THREE.LineBasicMaterial({
+                color: 0x000000,
+                transparent: true,
+                opacity: 0.28
+            });
+            mesh.add(new THREE.LineSegments(edgesGeometry, edgesMaterial));
+            cargoGroup.add(mesh);
+        }
+
+        function rangesOverlap(minA, maxA, minB, maxB) {
+            return minA < maxB - POSITION_EPSILON && minB < maxA - POSITION_EPSILON;
+        }
+
+        function compactBlockPlacementsAlongX(blockPlacements, rearBoundaryX) {
+            const indexed = blockPlacements.map((entry, index) => ({ ...entry, originalIndex: index }));
+            const sorted = [...indexed].sort((a, b) => {
+                const aMaxX = a.position.x + a.position.width / 2;
+                const bMaxX = b.position.x + b.position.width / 2;
+                return bMaxX - aMaxX;
+            });
+            const fixed = [];
+
+            sorted.forEach((entry) => {
+                const position = { ...entry.position };
+                const currentMinX = position.x - position.width / 2;
+                const currentMaxX = position.x + position.width / 2;
+                let targetMaxX = rearBoundaryX;
+
+                fixed.forEach((blocker) => {
+                    const overlapY = rangesOverlap(
+                        position.y - position.height / 2,
+                        position.y + position.height / 2,
+                        blocker.position.y - blocker.position.height / 2,
+                        blocker.position.y + blocker.position.height / 2
+                    );
+                    const overlapZ = rangesOverlap(
+                        position.z - position.depth / 2,
+                        position.z + position.depth / 2,
+                        blocker.position.z - blocker.position.depth / 2,
+                        blocker.position.z + blocker.position.depth / 2
+                    );
+
+                    if (overlapY && overlapZ) {
+                        const blockerMinX = blocker.position.x - blocker.position.width / 2;
+                        targetMaxX = Math.min(targetMaxX, blockerMinX - GAP);
+                    }
+                });
+
+                if (targetMaxX > currentMaxX + POSITION_EPSILON) {
+                    position.x += targetMaxX - currentMaxX;
+                }
+
+                fixed.push({
+                    ...entry,
+                    position
+                });
+            });
+
+            const placements = fixed
+                .sort((a, b) => a.originalIndex - b.originalIndex)
+                .map(({ originalIndex, ...entry }) => entry);
+            const frontEdgeX = placements.reduce((minValue, entry) => {
+                return Math.min(minValue, entry.position.x - entry.position.width / 2);
+            }, rearBoundaryX);
+
+            return { placements, frontEdgeX };
+        }
+
+        function compactBlockPlacementsAlongZ(blockPlacements) {
+            const indexed = blockPlacements.map((entry, index) => ({ ...entry, originalIndex: index }));
+            const sorted = [...indexed].sort((a, b) => {
+                const aMinZ = a.position.z - a.position.depth / 2;
+                const bMinZ = b.position.z - b.position.depth / 2;
+                if ((a.position.z >= 0) !== (b.position.z >= 0)) {
+                    return a.position.z < 0 ? -1 : 1;
+                }
+                if (a.position.z < 0 && b.position.z < 0) {
+                    return aMinZ - bMinZ;
+                }
+                const aMaxZ = a.position.z + a.position.depth / 2;
+                const bMaxZ = b.position.z + b.position.depth / 2;
+                return bMaxZ - aMaxZ;
+            });
+            const fixed = [];
+
+            sorted.forEach((entry) => {
+                const position = { ...entry.position };
+                const currentMinZ = position.z - position.depth / 2;
+                const currentMaxZ = position.z + position.depth / 2;
+                const moveToPositiveSide = position.z >= 0;
+
+                if (moveToPositiveSide) {
+                    let targetMaxZ = MAX_Z_EDGE;
+
+                    fixed.forEach((blocker) => {
+                        const overlapX = rangesOverlap(
+                            position.x - position.width / 2,
+                            position.x + position.width / 2,
+                            blocker.position.x - blocker.position.width / 2,
+                            blocker.position.x + blocker.position.width / 2
+                        );
+                        const overlapY = rangesOverlap(
+                            position.y - position.height / 2,
+                            position.y + position.height / 2,
+                            blocker.position.y - blocker.position.height / 2,
+                            blocker.position.y + blocker.position.height / 2
+                        );
+
+                        if (overlapX && overlapY && blocker.position.z >= -POSITION_EPSILON) {
+                            const blockerMinZ = blocker.position.z - blocker.position.depth / 2;
+                            targetMaxZ = Math.min(targetMaxZ, blockerMinZ - GAP);
+                        }
+                    });
+
+                    if (targetMaxZ < currentMaxZ - POSITION_EPSILON) {
+                        position.z -= currentMaxZ - targetMaxZ;
+                    }
+                } else {
+                    let targetMinZ = MIN_Z_EDGE;
+
+                    fixed.forEach((blocker) => {
+                        const overlapX = rangesOverlap(
+                            position.x - position.width / 2,
+                            position.x + position.width / 2,
+                            blocker.position.x - blocker.position.width / 2,
+                            blocker.position.x + blocker.position.width / 2
+                        );
+                        const overlapY = rangesOverlap(
+                            position.y - position.height / 2,
+                            position.y + position.height / 2,
+                            blocker.position.y - blocker.position.height / 2,
+                            blocker.position.y + blocker.position.height / 2
+                        );
+
+                        if (overlapX && overlapY && blocker.position.z <= POSITION_EPSILON) {
+                            const blockerMaxZ = blocker.position.z + blocker.position.depth / 2;
+                            targetMinZ = Math.max(targetMinZ, blockerMaxZ + GAP);
+                        }
+                    });
+
+                    if (targetMinZ > currentMinZ + POSITION_EPSILON) {
+                        position.z += targetMinZ - currentMinZ;
+                    }
+                }
+
+                fixed.push({
+                    ...entry,
+                    position
+                });
+            });
+
+            return fixed
+                .sort((a, b) => a.originalIndex - b.originalIndex)
+                .map(({ originalIndex, ...entry }) => entry);
+        }
+
+        async function createCargo(clientKey, renderToken) {
             if (cargoGroup) {
                 scene.remove(cargoGroup);
             }
 
             cargoGroup = new THREE.Group();
 
-            const clientData = CLIENT_DATA[clientKey];
-            if (!clientData) return;
-
-            // Coletar todos os itens
-            const allItems = [];
-            
-            if (clientKey === 'all') {
-                // Todos os clientes - manter ordem
-                const clientOrder = Object.keys(CLIENT_DATA);
-                clientOrder.forEach(key => {
-                    if (key !== 'all') {
-                        const data = CLIENT_DATA[key];
-                        console.log(`Processando cliente: ${data.name}`);
-                        data.items.forEach(item => {
-                            console.log(`  Item: ${item.name} - Quantidade: ${item.quantity}`);
-                            for (let i = 0; i < item.quantity; i++) {
-                                allItems.push({
-                                    ...item,
-                                    clientName: data.name,
-                                    clientKey: key
-                                });
-                            }
-                        });
-                    }
-                });
-            } else {
-                // Cliente específico
-                console.log(`Processando cliente específico: ${clientData.name}`);
-                clientData.items.forEach(item => {
-                    console.log(`  Item: ${item.name} - Quantidade: ${item.quantity}`);
-                    for (let i = 0; i < item.quantity; i++) {
-                        allItems.push({
-                            ...item,
-                            clientName: clientData.name,
-                            clientKey: clientKey
-                        });
-                    }
-                });
-            }
-            
-            console.log(`Total de itens a processar: ${allItems.length}`);
-
-            // Sistema de empacotamento - empilhamento vertical simples
-            const { length, width, height } = TRUCK_DIMENSIONS;
-            
-            // Array para rastrear itens já posicionados (para colisão)
-            const placedItems = [];
-            
-            function checkCollision3D(x, y, z, itemWidth, itemHeight, itemDepth) {
-                // Verificar colisão com todos os itens já posicionados
-                for (const item of placedItems) {
-                    const halfWidth1 = itemWidth / 2;
-                    const halfHeight1 = itemHeight / 2;
-                    const halfDepth1 = itemDepth / 2;
-                    
-                    const halfWidth2 = item.width / 2;
-                    const halfHeight2 = item.height / 2;
-                    const halfDepth2 = item.depth / 2;
-                    
-                    // Verificar sobreposição em todos os eixos
-                    const overlapX = Math.abs(x - item.x) < (halfWidth1 + halfWidth2);
-                    const overlapY = Math.abs(y - item.y) < (halfHeight1 + halfHeight2);
-                    const overlapZ = Math.abs(z - item.z) < (halfDepth1 + halfDepth2);
-                    
-                    if (overlapX && overlapY && overlapZ) {
-                        return true; // Houve colisão
-                    }
-                }
-                return false; // Sem colisão
+            const clientData = getClientDataForSelection(clientKey);
+            if (!clientData) {
+                return false;
             }
 
-            function findBestPosition(itemWidth, itemHeight, itemDepth) {
-                const { length, width, height } = TRUCK_DIMENSIONS;
-                const GAP = 0.01;
-                const FLOOR_Y = 0.1;
+            const allItems = collectItems(clientKey);
+            const blocks = buildClientBlocks(clientKey, allItems);
+            async function runPacking(compactMode = false, aggressiveMode = false, rescueMode = false, entryStrategy = 'footprint') {
+                const placements = [];
+                const layerStats = { fundo_chao: 0, fundo_empilhado: 0 };
+                let processedCount = 0;
+                let totalVolume = 0;
+                let currentRearX = REAR_START_X;
+                let maxStackLevel = 0;
+                let stackHeightPenalty = 0;
+                const orderGap = rescueMode
+                    ? Math.min(ORDER_GAP, 0.002)
+                    : aggressiveMode
+                    ? Math.min(ORDER_GAP, 0.005)
+                    : compactMode ? Math.min(ORDER_GAP, 0.015) : ORDER_GAP;
 
-                function insideTruckXZ(x, z) {
-                    const minX = -length / 2 + itemWidth / 2 + GAP;
-                    const maxX = length / 2 - itemWidth / 2 - GAP;
-                    const minZ = -width / 2 + itemDepth / 2 + GAP;
-                    const maxZ = width / 2 - itemDepth / 2 - GAP;
-                    return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
-                }
+                loadingStageLabel = rescueMode
+                    ? 'Fazendo ajuste final para acomodar todos os volumes...'
+                    : aggressiveMode
+                    ? 'Buscando qualquer espaco util para caber tudo...'
+                    : compactMode
+                        ? 'Compactando carga para caber tudo...'
+                        : (clientKey === 'all' ? 'Organizando pedidos no caminhão...' : 'Organizando carga do cliente...');
+                updateLoadingProgress(0, allItems.length);
 
-                function getSupportTopY(x, z) {
-                    // Altura de apoio = topo mais alto de qualquer item cujo "pé" (XZ) sobreponha o novo item.
-                    let supportTop = FLOOR_Y;
-                    for (const it of placedItems) {
-                        const overlapX = Math.abs(x - it.x) < (itemWidth / 2 + it.width / 2 - 1e-9);
-                        const overlapZ = Math.abs(z - it.z) < (itemDepth / 2 + it.depth / 2 - 1e-9);
-                        if (overlapX && overlapZ) {
-                            const top = it.y + it.height / 2;
-                            if (top > supportTop) supportTop = top;
+                for (const block of blocks) {
+                    const remainingBlocks = blocks.slice(blocks.indexOf(block) + 1);
+                    const reserveForRemaining = remainingBlocks.reduce((sum, remainingBlock) => {
+                        return sum + remainingBlock.minimalLength;
+                    }, 0) + orderGap * remainingBlocks.length;
+                    const frontLimit = rescueMode
+                        ? MIN_X_LIMIT
+                        : clientKey === 'all'
+                        ? Math.max(MIN_X_LIMIT, currentRearX - Math.max(block.minimalLength, currentRearX - MIN_X_LIMIT - reserveForRemaining))
+                        : MIN_X_LIMIT;
+                    const state = buildStateForBlock(block, currentRearX, frontLimit);
+                    const entries = buildEntriesForBlock(block, entryStrategy);
+                    const blockPlacements = [];
+
+                    for (let itemIndex = 0; itemIndex < entries.length; itemIndex++) {
+                        if (renderToken !== currentRenderToken) {
+                            return null;
+                        }
+
+                        const entry = entries[itemIndex];
+                        const position = choosePlacementForEntry(state, entry, compactMode, aggressiveMode, rescueMode);
+
+                        processedCount++;
+                        if (position) {
+                            blockPlacements.push({ item: entry.item, position });
+                            totalVolume += position.width * position.height * position.depth;
+                            layerStats[position.layer] = (layerStats[position.layer] || 0) + 1;
+                            maxStackLevel = Math.max(maxStackLevel, position.stackLevel || 0);
+                            stackHeightPenalty += Math.pow(Math.max((position.stackLevel || 1) - 1, 0), 2);
+                        }
+
+                        if (processedCount % PACKING_BATCH_SIZE === 0 || processedCount === allItems.length) {
+                            updateLoadingProgress(processedCount, allItems.length);
+                            await nextFrame();
                         }
                     }
-                    return supportTop;
+
+                    const laterallyCompactedBlock = compactBlockPlacementsAlongZ(blockPlacements);
+                    const compactedBlock = compactBlockPlacementsAlongX(laterallyCompactedBlock, currentRearX);
+                    placements.push(...compactedBlock.placements);
+                    currentRearX = compactedBlock.frontEdgeX - orderGap;
                 }
 
-                // Candidatos de posição para encostar fileiras (pelo fundo/esquerda e pelas bordas dos itens já colocados).
-                const xCandidates = new Set([
-                    -length / 2 + itemWidth / 2 + GAP
-                ]);
-                const zCandidates = new Set([
-                    -width / 2 + itemDepth / 2 + GAP
-                ]);
-
-                for (const it of placedItems) {
-                    xCandidates.add(it.x + it.width / 2 + itemWidth / 2 + GAP);
-                    zCandidates.add(it.z + it.depth / 2 + itemDepth / 2 + GAP);
-                }
-
-                const xs = Array.from(xCandidates).sort((a, b) => a - b);
-                const zs = Array.from(zCandidates).sort((a, b) => a - b);
-
-                // Ordem: fundo -> frente (X crescente), esquerda -> direita (Z crescente)
-                for (const x of xs) {
-                    for (const z of zs) {
-                        if (!insideTruckXZ(x, z)) continue;
-
-                        const supportTop = getSupportTopY(x, z);
-                        const y = supportTop + itemHeight / 2;
-
-                        if (y + itemHeight / 2 > height - FLOOR_Y) continue;
-                        if (checkCollision3D(x, y, z, itemWidth, itemHeight, itemDepth)) continue;
-
-                        placedItems.push({
-                            x,
-                            y,
-                            z,
-                            width: itemWidth,
-                            height: itemHeight,
-                            depth: itemDepth
-                        });
-
-                        console.log(`✅ Posicionando em X=${x.toFixed(2)}, Y=${y.toFixed(3)}, Z=${z.toFixed(2)}m`);
-
-                        return {
-                            x,
-                            y,
-                            z,
-                            layer: supportTop === FLOOR_Y ? 'fundo_chao' : 'fundo_empilhado'
-                        };
-                    }
-                }
-
-                console.log(`❌ Não encontrou nenhuma posição que caiba!`);
-                return null;
+                return {
+                    placements,
+                    layerStats,
+                    totalVolume,
+                    maxStackLevel,
+                    stackHeightPenalty,
+                    usedLength: REAR_START_X - currentRearX
+                };
             }
 
-            let placedCount = 0;
-            let totalVolume = 0;
-            const layerStats = { fundo_chao: 0, meio_chao: 0, fundo_empilhado: 0, meio_empilhado: 0 };
+            let packingResult = null;
+            const runVariants = [
+                { compactMode: false, aggressiveMode: false, rescueMode: false },
+                { compactMode: false, aggressiveMode: true, rescueMode: false },
+                { compactMode: true, aggressiveMode: false, rescueMode: false },
+                { compactMode: true, aggressiveMode: true, rescueMode: false },
+                { compactMode: true, aggressiveMode: true, rescueMode: true }
+            ];
 
-            // Empacotar itens - ordenar por tamanho para melhor aproveitamento
-            allItems.sort((a, b) => {
-                const volumeA = a.dimensions[0] * a.dimensions[1] * a.dimensions[2];
-                const volumeB = b.dimensions[0] * b.dimensions[1] * b.dimensions[2];
-                return volumeB - volumeA;  // Maiores primeiro
-            });
-
-            console.log(`Empacotando ${allItems.length} itens - modo carga real (fundo → cima)...`);
-
-            // Empacotar itens
-            allItems.forEach((item, index) => {
-                const [itemWidth, itemHeight, itemDepth] = item.dimensions;
-                
-                // Encontrar posição com lógica de carga real
-                const position = findBestPosition(itemWidth, itemHeight, itemDepth);
-                
-                if (position) {
-                    // Criar item
-                    const geometry = new THREE.BoxGeometry(itemWidth, itemHeight, itemDepth);
-                    const material = new THREE.MeshStandardMaterial({
-                        color: item.color,
-                        roughness: 0.4,
-                        metalness: 0.1,
-                        transparent: false,
-                        opacity: 0.95
-                    });
-                    
-                    const mesh = new THREE.Mesh(geometry, material);
-                    mesh.position.set(position.x, position.y, position.z);
-                    mesh.castShadow = true;
-                    mesh.receiveShadow = true;
-                    mesh.userData = {
-                        name: item.name,
-                        clientName: item.clientName,
-                        dimensions: item.dimensions,
-                        layer: position.layer
-                    };
-                    
-                    // Adicionar bordas
-                    const edgesGeometry = new THREE.EdgesGeometry(geometry);
-                    const edgesMaterial = new THREE.LineBasicMaterial({ 
-                        color: 0x000000, 
-                        linewidth: 1,
-                        transparent: true,
-                        opacity: 0.3
-                    });
-                    const edges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
-                    mesh.add(edges);
-                    
-                    cargoGroup.add(mesh);
-                    placedCount++;
-                    totalVolume += itemWidth * itemHeight * itemDepth;
-                    layerStats[position.layer]++;
-                    
-                    let layerDesc = '';
-                    if (position.layer === 'fundo_chao') layerDesc = 'FUNDO - CHÃO';
-                    else if (position.layer === 'meio_chao') layerDesc = 'MEIO - CHÃO';
-                    else if (position.layer === 'fundo_empilhado') layerDesc = 'FUNDO - EMPILHADO';
-                    else if (position.layer === 'meio_empilhado') layerDesc = 'MEIO - EMPILHADO';
-                    
-                    console.log(`${item.name}: ${layerDesc} - posição (${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) - Cliente: ${item.clientName}`);
-                } else {
-                    console.warn(`Não foi possível posicionar: ${item.name} (${item.clientName})`);
+            for (const variant of runVariants) {
+                for (const strategy of ENTRY_ORDER_STRATEGIES) {
+                    const candidate = await runPacking(
+                        variant.compactMode,
+                        variant.aggressiveMode,
+                        variant.rescueMode,
+                        strategy
+                    );
+                    if (!candidate) {
+                        return false;
+                    }
+                    if (isPackingResultBetter(candidate, packingResult)) {
+                        packingResult = candidate;
+                    }
+                    if (packingResult && packingResult.placements.length === allItems.length && packingResult.usedLength <= (TRUCK_DIMENSIONS.length + POSITION_EPSILON)) {
+                        // still continue trying all variants only if we haven't fit everything compactly enough
+                        if (!variant.rescueMode && strategy !== ENTRY_ORDER_STRATEGIES[ENTRY_ORDER_STRATEGIES.length - 1]) {
+                            continue;
+                        }
+                    }
                 }
-            });
+            }
+            if (!packingResult || packingResult.placements.length !== allItems.length) {
+                document.getElementById('info-panel').style.display = 'none';
+                updateStats(0, 0);
+                return false;
+            }
 
-            console.log(`Estatísticas: Fundo-chão: ${layerStats.fundo_chao}, Meio-chão: ${layerStats.meio_chao}, Fundo-empilhado: ${layerStats.fundo_empilhado}, Meio-empilhado: ${layerStats.meio_empilhado}`);
+            const { placements, layerStats, totalVolume } = packingResult;
 
             scene.add(cargoGroup);
+            loadingStageLabel = 'Renderizando carga...';
+            updateLoadingProgress(0, placements.length);
 
-            // Atualizar estatísticas
-            updateStats(placedCount, totalVolume);
-            
-            // Mostrar painel de informações
-            showInfoPanel(clientData, placedCount, allItems.length);
+            for (let startIndex = 0; startIndex < placements.length; startIndex += PACKING_BATCH_SIZE) {
+                if (renderToken !== currentRenderToken) {
+                    return false;
+                }
+
+                const batchEnd = Math.min(startIndex + PACKING_BATCH_SIZE, placements.length);
+                for (let index = startIndex; index < batchEnd; index++) {
+                    createBoxMesh(placements[index].item, placements[index].position);
+                }
+
+                updateLoadingProgress(batchEnd, placements.length);
+                await nextFrame();
+            }
+
+            updateStats(placements.length, totalVolume);
+            showInfoPanel(clientData, placements.length, allItems.length, layerStats, clientKey === 'all' ? 'multi' : 'single');
+            return true;
         }
 
         function updateStats(placedCount, totalVolume) {
             const truckVolume = TRUCK_DIMENSIONS.length * TRUCK_DIMENSIONS.width * TRUCK_DIMENSIONS.height;
-            const ocupacao = (totalVolume / truckVolume) * 100;
-            
-            document.getElementById('volume-total').textContent = totalVolume.toFixed(2) + ' m³';
-            document.getElementById('items-count').textContent = placedCount;
-            document.getElementById('ocupacao').textContent = ocupacao.toFixed(1) + '%';
-            document.getElementById('eficiencia').textContent = (ocupacao > 85 ? 'Excelente' : ocupacao > 70 ? 'Boa' : 'Regular');
+            const ocupacao = truckVolume > 0 ? (totalVolume / truckVolume) * 100 : 0;
+
+            document.getElementById('volume-total').textContent = `${totalVolume.toFixed(2)} m³`;
+            document.getElementById('items-count').textContent = String(placedCount);
+            document.getElementById('ocupacao').textContent = `${ocupacao.toFixed(1)}%`;
+            document.getElementById('eficiencia').textContent =
+                ocupacao > 85 ? 'Excelente' : ocupacao > 70 ? 'Boa' : ocupacao > 50 ? 'Media' : 'Baixa';
         }
 
-        function showInfoPanel(clientData, placedCount, totalItems) {
+        function showInfoPanel(clientData, placedCount, totalItems, layerStats, mode) {
             const infoPanel = document.getElementById('info-panel');
             const infoContent = document.getElementById('info-content');
-            
+            const itemSummary = {};
+
+            if (clientData.items) {
+                clientData.items.forEach((item) => {
+                    itemSummary[item.name] = (itemSummary[item.name] || 0) + item.quantity;
+                });
+            }
+
             let html = `
                 <div class="info-item">
                     <span class="info-label">Cliente:</span>
                     <span class="info-value">${clientData.name}</span>
                 </div>
                 <div class="info-item">
+                    <span class="info-label">Modo:</span>
+                    <span class="info-value">${mode === 'multi' ? 'Pedidos agrupados e balanceados' : 'Carga balanceada do cliente'}</span>
+                </div>
+                <div class="info-item">
                     <span class="info-label">Itens:</span>
                     <span class="info-value">${placedCount}/${totalItems}</span>
                 </div>
+                <div class="info-item">
+                    <span class="info-label">No chão:</span>
+                    <span class="info-value">${layerStats.fundo_chao || 0}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Empilhados:</span>
+                    <span class="info-value">${layerStats.fundo_empilhado || 0}</span>
+                </div>
             `;
-            
-            // Adicionar resumo por tipo de item
-            const itemSummary = {};
-            if (clientData.items) {
-                clientData.items.forEach(item => {
-                    itemSummary[item.name] = item.quantity;
-                });
-            }
-            
+
             Object.entries(itemSummary).forEach(([name, quantity]) => {
                 html += `
                     <div class="info-item">
@@ -843,51 +1893,78 @@
                     </div>
                 `;
             });
-            
+
             infoContent.innerHTML = html;
             infoPanel.style.display = 'block';
         }
 
-        function renderCargo() {
-            const clientSelect = document.getElementById('client-select');
-            const selectedClient = clientSelect.value;
-            
+        function updateLoadingProgress(processed, total) {
+            const loadingText = document.getElementById('loading-text');
+            if (!loadingText) {
+                return;
+            }
+
+            if (!total) {
+                loadingText.textContent = loadingStageLabel;
+                return;
+            }
+
+            const percentage = Math.round((processed / total) * 100);
+            loadingText.textContent = `${loadingStageLabel} ${processed}/${total} (${percentage}%)`;
+        }
+
+        async function renderCargo() {
+            const selectedClient = document.getElementById('client-select').value;
             if (!selectedClient) {
                 alert('Por favor, selecione um cliente.');
                 return;
             }
 
+            const renderToken = ++currentRenderToken;
             showLoading(true);
-            
-            // Simular processamento
-            setTimeout(() => {
-                createCargo(selectedClient);
-                showLoading(false);
-            }, 1000);
+            updateLoadingProgress(0, 0);
+
+            try {
+                await nextFrame();
+                const success = await createCargo(selectedClient, renderToken);
+                if (!success && renderToken === currentRenderToken) {
+                    alert('Nao foi possivel organizar toda a carga.');
+                }
+            } catch (error) {
+                console.error(error);
+                alert('Nao foi possivel renderizar a carga.');
+            } finally {
+                if (renderToken === currentRenderToken) {
+                    showLoading(false);
+                }
+            }
         }
 
         function resetView() {
+            currentRenderToken++;
+            showLoading(false);
             camera.position.set(15, 10, 15);
             camera.lookAt(0, 0, 0);
-            
+
             if (cargoGroup) {
                 scene.remove(cargoGroup);
                 cargoGroup = null;
             }
-            
-            // Resetar estatísticas
+
             document.getElementById('volume-total').textContent = '0 m³';
             document.getElementById('items-count').textContent = '0';
             document.getElementById('ocupacao').textContent = '0%';
             document.getElementById('eficiencia').textContent = '0%';
-            
-            // Esconder painel de informações
             document.getElementById('info-panel').style.display = 'none';
         }
 
         function showLoading(show) {
             isLoading = show;
             document.getElementById('loading').style.display = show ? 'block' : 'none';
+            if (show) {
+                loadingStageLabel = 'Processando carga...';
+                updateLoadingProgress(0, 0);
+            }
         }
 
         function onWindowResize() {
@@ -899,16 +1976,12 @@
 
         function animate() {
             requestAnimationFrame(animate);
-            
-            // Atualizar câmera se houver controles
             if (scene.userData.updateCamera) {
                 scene.userData.updateCamera();
             }
-            
             renderer.render(scene, camera);
         }
 
-        // Inicializar quando a página carregar
         window.addEventListener('load', init);
     </script>
 </body>
