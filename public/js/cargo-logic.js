@@ -8,6 +8,12 @@ let stacks = [];
 let stacksByClient = new Map();
 let stacksByProduct = new Map();
 
+// Exportar variáveis para uso global
+window.clientBlocks = clientBlocks;
+window.stacks = stacks;
+window.stacksByClient = stacksByClient;
+window.stacksByProduct = stacksByProduct;
+
 // Classe Stack
 class Stack {
     constructor(clientKey, productKey, x, z, baseWidth, baseDepth) {
@@ -67,6 +73,10 @@ class ClientBlock {
         return itemLeft >= this.endX - GAP_STACK && itemRight <= this.startX + GAP_STACK;
     }
 }
+
+// Exportar classes para uso global
+window.Stack = Stack;
+window.ClientBlock = ClientBlock;
 
 // Funções principais de carregamento
 async function renderCargo() {
@@ -218,8 +228,8 @@ function processClientItems(clientKey, clientBlock) {
 function loadProductType(product, clientBlock) {
     const placements = [];
     const orientations = [
-        { width: product.dimensions[0], depth: product.dimensions[2], rotated: false },
-        { width: product.dimensions[2], depth: product.dimensions[0], rotated: true }
+        { width: product.dimensions[0], height: product.dimensions[1], depth: product.dimensions[2], rotated: false },
+        { width: product.dimensions[2], height: product.dimensions[1], depth: product.dimensions[0], rotated: true }
     ];
     
     // Tentar cada orientação
@@ -252,7 +262,7 @@ function loadProductWithOrientation(product, orientation, clientBlock) {
         if (loadedCount >= maxQuantity) break;
         
         // Criar nova pilha
-        const stack = createStackAtPosition(product, position, orientation);
+        const stack = createStackAtPosition(product, position, orientation, clientBlock);
         if (stack) {
             // Empilhar máximo possível
             const stackedItems = stackItemsInPosition(product, stack, orientation, maxQuantity - loadedCount);
@@ -326,7 +336,7 @@ function isValidPosition(x, z, itemWidth, itemDepth, clientBlock, gap) {
     return true;
 }
 
-function createStackAtPosition(product, position, orientation) {
+function createStackAtPosition(product, position, orientation, clientBlock) {
     const productKey = `${product.clientKey}:${product.name}`;
     const stack = new Stack(
         product.clientKey,
@@ -394,7 +404,7 @@ function stackItemsInPosition(product, stack, orientation, maxItems) {
             itemCount++;
             
             // Verificar limite de altura
-            if (placement.y + orientation.height/2 > TRUCK_DIMENSIONS.height - 0.05) {
+            if (placement.y + orientation.height / 2 > TRUCK_DIMENSIONS.height - 0.05) {
                 break;
             }
         } else {

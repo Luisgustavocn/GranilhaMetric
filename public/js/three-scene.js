@@ -13,6 +13,15 @@ let materialCache = new Map();
 // Instanced rendering groups
 let instanceGroups = {};
 
+// Exportar variáveis para uso global
+window.scene = scene;
+window.camera = camera;
+window.renderer = renderer;
+window.cargoGroup = cargoGroup;
+window.isLoading = isLoading;
+window.currentRenderToken = currentRenderToken;
+window.instanceGroups = instanceGroups;
+
 function initScene() {
     const container = document.getElementById('canvas-container');
     

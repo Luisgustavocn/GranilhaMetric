@@ -18,6 +18,16 @@ const MIN_X_LIMIT = -TRUCK_DIMENSIONS.length / 2 + GAP_STACK;
 const FLOOR_Y = 0.1;
 const REAR_START_X = TRUCK_DIMENSIONS.length / 2 - GAP_STACK;
 
+// Exportar constantes para uso global
+window.TRUCK_DIMENSIONS = TRUCK_DIMENSIONS;
+window.GAP_STACK = GAP_STACK;
+window.GAP_CLIENTE = GAP_CLIENTE;
+window.MIN_Z_EDGE = MIN_Z_EDGE;
+window.MAX_Z_EDGE = MAX_Z_EDGE;
+window.MIN_X_LIMIT = MIN_X_LIMIT;
+window.FLOOR_Y = FLOOR_Y;
+window.REAR_START_X = REAR_START_X;
+
 // Funções de cor
 function hashOrderKey(orderKey) {
     const normalizedKey = String(orderKey || 'pedido');

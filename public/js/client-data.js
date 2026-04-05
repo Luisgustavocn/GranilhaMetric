@@ -31,3 +31,7 @@ const DEFAULT_CLIENT_DATA = {
 // Cliente atual
 let CLIENT_DATA = DEFAULT_CLIENT_DATA;
 let ORDER_PREVIEW_DATA = null;
+
+// Exportar para uso global
+window.CLIENT_DATA = CLIENT_DATA;
+window.ORDER_PREVIEW_DATA = ORDER_PREVIEW_DATA;
