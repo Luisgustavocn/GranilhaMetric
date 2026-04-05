@@ -16,14 +16,15 @@ window.stacksByProduct = stacksByProduct;
 
 // Classe Stack
 class Stack {
-    constructor(clientKey, productKey, x, z, baseWidth, baseDepth) {
+    constructor(clientKey, productKey, x, z, baseWidth, baseDepth, baseY = FLOOR_Y) {
         this.clientKey = clientKey;
         this.productKey = productKey;
         this.x = x;
         this.z = z;
         this.baseWidth = baseWidth;
         this.baseDepth = baseDepth;
-        this.currentTopY = FLOOR_Y;
+        this.baseY = baseY;
+        this.currentTopY = baseY;
         this.items = [];
     }
     
@@ -32,7 +33,7 @@ class Stack {
             return false;
         }
         const requiredY = this.currentTopY + itemHeight;
-        if (requiredY > TRUCK_DIMENSIONS.height - 0.05) {
+        if (requiredY > TRUCK_DIMENSIONS.height - TOP_CLEARANCE) {
             return false;
         }
         return true;
@@ -46,7 +47,7 @@ class Stack {
             width: rotated ? itemDepth : itemWidth,
             height: itemHeight,
             depth: rotated ? itemWidth : itemDepth,
-            layer: this.currentTopY === FLOOR_Y ? 'fundo_chao' : 'fundo_empilhado',
+            layer: this.baseY <= FLOOR_Y + 1e-6 ? 'fundo_chao' : 'fundo_empilhado',
             stackLevel: this.items.length,
             rotated: rotated
         };
@@ -65,6 +66,8 @@ class ClientBlock {
         this.startX = startX;
         this.endX = endX;
         this.stacks = [];
+        this.searchCursor = null;
+        this.boundaryStacks = [];
     }
     
     containsPosition(x, width) {
@@ -86,33 +89,40 @@ async function renderCargo() {
         return;
     }
     
-    const renderToken = ++currentRenderToken;
+    window.currentRenderToken = (window.currentRenderToken || 0) + 1;
+    const renderToken = window.currentRenderToken;
     showLoading(true);
     
     try {
         await nextFrame();
         const success = await createCargo(selectedClient, renderToken);
         
-        if (!success && renderToken === currentRenderToken) {
+        if (!success && renderToken === window.currentRenderToken) {
             alert('Não foi possível organizar toda a carga.');
         }
     } catch (error) {
         console.error(error);
         alert('Não foi possível renderizar a carga.');
     } finally {
-        if (renderToken === currentRenderToken) {
+        if (renderToken === window.currentRenderToken) {
             showLoading(false);
         }
     }
 }
 
 async function createCargo(clientKey, renderToken) {
+    const scene = window.scene;
+    if (!scene) {
+        console.warn('Cena Three.js não inicializada.');
+        return false;
+    }
+
     // Limpar visualização anterior
-    if (cargoGroup) {
-        scene.remove(cargoGroup);
+    if (window.cargoGroup) {
+        scene.remove(window.cargoGroup);
     }
     
-    cargoGroup = new THREE.Group();
+    window.cargoGroup = new THREE.Group();
     
     const clientData = getClientDataForSelection(clientKey);
     if (!clientData) {
@@ -126,20 +136,21 @@ async function createCargo(clientKey, renderToken) {
     stacks.length = 0;
     stacksByClient.clear();
     stacksByProduct.clear();
-    instanceGroups = {};
+    window.instanceGroups = {};
     
     const allPlacements = [];
     
     if (clientKey === 'all') {
         // Múltiplos clientes
         const clientKeys = Object.keys(CLIENT_DATA);
+
         for (let i = 0; i < clientKeys.length; i++) {
             const key = clientKeys[i];
-            const client = CLIENT_DATA[key];
-            
-            // Criar bloco para cliente
-            const startX = REAR_START_X - (i * GAP_CLIENTE);
-            const block = new ClientBlock(key, startX, startX - 2);
+            // Cada cliente passa a procurar espaço em todo o caminhão.
+            // Assim, se o cliente anterior deixou sobras em uma linha,
+            // o próximo pode ocupar exatamente esses vazios.
+            const block = new ClientBlock(key, REAR_START_X, MIN_X_LIMIT);
+            block.boundaryStacks = [...stacks];
             clientBlocks.push(block);
             
             // Processar itens do cliente
@@ -150,7 +161,7 @@ async function createCargo(clientKey, renderToken) {
         }
     } else {
         // Cliente único
-        const block = new ClientBlock(clientKey, REAR_START_X, REAR_START_X - 4);
+        const block = new ClientBlock(clientKey, REAR_START_X, MIN_X_LIMIT);
         clientBlocks.push(block);
         
         const result = processClientItems(clientKey, block);
@@ -158,23 +169,37 @@ async function createCargo(clientKey, renderToken) {
     }
     
     // Renderizar todos os itens
-    scene.add(cargoGroup);
+    scene.add(window.cargoGroup);
+    let renderedCount = 0;
     
     for (let i = 0; i < allPlacements.length; i += 50) {
         const batchEnd = Math.min(i + 50, allPlacements.length);
         
         for (let j = i; j < batchEnd; j++) {
             const { item, position } = allPlacements[j];
-            createBoxMesh(item, position);
+            if (createBoxMesh(item, position)) {
+                renderedCount++;
+            }
         }
         
         await nextFrame();
     }
     
     console.log(`✅ Carregamento concluído: ${allPlacements.length} itens`);
+    console.log(`🎨 Itens renderizados: ${renderedCount}`);
+    window.lastCargoRenderStats = {
+        placedCount: allPlacements.length,
+        renderedCount
+    };
+    if (renderedCount !== allPlacements.length) {
+        console.warn(`⚠️ Diferença entre itens colocados e renderizados: ${allPlacements.length - renderedCount}`);
+    }
     
     // Mostrar informações
-    showInfoPanel(clientData, allPlacements.length, allPlacements.length, {}, clientKey === 'all' ? 'multi' : 'single');
+    const totalRequestedItems = Array.isArray(clientData.items)
+        ? clientData.items.reduce((sum, item) => sum + Math.max(0, Number(item?.quantity || 0)), 0)
+        : 0;
+    showInfoPanel(clientData, allPlacements.length, totalRequestedItems, {}, clientKey === 'all' ? 'multi' : 'single');
     
     return allPlacements.length > 0;
 }
@@ -189,7 +214,8 @@ function processClientItems(clientKey, clientBlock) {
     // Agrupar itens por tipo de produto
     const productsMap = new Map();
     client.items.forEach((item, itemIndex) => {
-        const productKey = `${clientKey}:${item.name}`;
+        const dimensionsKey = Array.isArray(item.dimensions) ? item.dimensions.join('x') : 'sem-dimensoes';
+        const productKey = `${clientKey}:${item.name}:${dimensionsKey}`;
         if (!productsMap.has(productKey)) {
             productsMap.set(productKey, {
                 name: item.name,
@@ -198,15 +224,41 @@ function processClientItems(clientKey, clientBlock) {
                 clientKey: clientKey,
                 clientName: client.name,
                 sourceIndex: itemIndex,
-                totalQuantity: item.quantity
+                totalQuantity: Math.max(0, Number(item.quantity || 0))
             });
+            return;
         }
+
+        const existingProduct = productsMap.get(productKey);
+        existingProduct.totalQuantity += Math.max(0, Number(item.quantity || 0));
     });
     
+    const sortedProducts = Array.from(productsMap.entries()).sort(([, productA], [, productB]) => {
+        const footprintA = Number(productA?.dimensions?.[0] || 0) * Number(productA?.dimensions?.[2] || 0);
+        const footprintB = Number(productB?.dimensions?.[0] || 0) * Number(productB?.dimensions?.[2] || 0);
+        if (Math.abs(footprintB - footprintA) > 1e-6) {
+            return footprintB - footprintA;
+        }
+
+        const volumeA = footprintA * Number(productA?.dimensions?.[1] || 0);
+        const volumeB = footprintB * Number(productB?.dimensions?.[1] || 0);
+        if (Math.abs(volumeB - volumeA) > 1e-6) {
+            return volumeB - volumeA;
+        }
+
+        const heightA = Number(productA?.dimensions?.[1] || 0);
+        const heightB = Number(productB?.dimensions?.[1] || 0);
+        if (Math.abs(heightB - heightA) > 1e-6) {
+            return heightB - heightA;
+        }
+
+        return Number(productB?.totalQuantity || 0) - Number(productA?.totalQuantity || 0);
+    });
+
     console.log(`📦 Produtos encontrados: ${productsMap.size}`);
     
-    // Processar cada tipo de produto completamente
-    for (const [productKey, product] of productsMap) {
+    // Processar cada tipo de produto completamente, do maior para o menor.
+    for (const [productKey, product] of sortedProducts) {
         console.log(`\n🎯 Carregando produto: ${product.name} (${product.totalQuantity} unidades)`);
         
         const productPlacements = loadProductType(product, clientBlock);
@@ -222,7 +274,10 @@ function processClientItems(clientKey, clientBlock) {
     console.log(`\n📊 Resumo do cliente ${client.name}:`);
     console.log(`   ✅ Total carregado: ${allPlacements.length} itens`);
     
-    return { placements: allPlacements };
+    return {
+        placements: allPlacements,
+        frontEdgeX: getPlacementsFrontEdgeX(allPlacements)
+    };
 }
 
 function loadProductType(product, clientBlock) {
@@ -230,76 +285,313 @@ function loadProductType(product, clientBlock) {
     const orientations = [
         { width: product.dimensions[0], height: product.dimensions[1], depth: product.dimensions[2], rotated: false },
         { width: product.dimensions[2], height: product.dimensions[1], depth: product.dimensions[0], rotated: true }
-    ];
+    ].filter((orientation, index, list) => {
+        return index === list.findIndex((candidate) =>
+            Math.abs(candidate.width - orientation.width) <= 1e-6 &&
+            Math.abs(candidate.depth - orientation.depth) <= 1e-6
+        );
+    }).sort((orientationA, orientationB) => {
+        const estimateA = estimateOrientationCapacity(clientBlock, orientationA);
+        const estimateB = estimateOrientationCapacity(clientBlock, orientationB);
+        return estimateB - estimateA;
+    });
     
-    // Tentar cada orientação
+    // Tentar cada orientação e usar a alternativa para preencher sobras.
     for (const orientation of orientations) {
+        const remainingQuantity = Math.max(0, product.totalQuantity - placements.length);
+        if (remainingQuantity === 0) {
+            break;
+        }
+
         console.log(`   🔄 Testando orientação: ${orientation.width.toFixed(2)}x${orientation.depth.toFixed(2)}${orientation.rotated ? ' (rotated)' : ''}`);
         
-        const orientationPlacements = loadProductWithOrientation(product, orientation, clientBlock);
+        const orientationPlacements = loadProductWithOrientation(product, orientation, clientBlock, remainingQuantity);
         
         if (orientationPlacements.length > 0) {
             placements.push(...orientationPlacements);
             console.log(`   ✅ Orientação bem-sucedida: ${orientationPlacements.length} unidades`);
-            break;
         }
     }
     
     return placements;
 }
 
-function loadProductWithOrientation(product, orientation, clientBlock) {
+function estimateOrientationCapacity(clientBlock, orientation) {
+    const availablePositions = findAvailablePositions(clientBlock, orientation.width, orientation.depth);
+    const stackCapacity = Math.max(
+        0,
+        Math.floor((TRUCK_DIMENSIONS.height - TOP_CLEARANCE - FLOOR_Y + 1e-6) / orientation.height)
+    );
+
+    return availablePositions.length * stackCapacity;
+}
+
+function loadProductWithOrientation(product, orientation, clientBlock, maxQuantity = product.totalQuantity) {
     const placements = [];
     let loadedCount = 0;
-    const maxQuantity = product.totalQuantity;
-    
-    // Buscar posições disponíveis
-    const availablePositions = findAvailablePositions(clientBlock, orientation.width, orientation.depth);
-    
-    console.log(`   📍 Posições disponíveis: ${availablePositions.length}`);
-    
-    for (const position of availablePositions) {
-        if (loadedCount >= maxQuantity) break;
-        
-        // Criar nova pilha
-        const stack = createStackAtPosition(product, position, orientation, clientBlock);
-        if (stack) {
-            // Empilhar máximo possível
-            const stackedItems = stackItemsInPosition(product, stack, orientation, maxQuantity - loadedCount);
-            
-            placements.push(...stackedItems);
-            loadedCount += stackedItems.length;
-            
-            console.log(`   📦 Pilha em (${position.x.toFixed(2)}, ${position.z.toFixed(2)}): ${stackedItems.length} unidades`);
+
+    const stackedOnExisting = stackItemsOnExistingStacks(product, orientation, clientBlock, maxQuantity);
+    if (stackedOnExisting.length > 0) {
+        placements.push(...stackedOnExisting);
+        loadedCount += stackedOnExisting.length;
+        console.log(`   ⬆️ Aproveitado em pilhas existentes: ${stackedOnExisting.length} unidades`);
+    }
+
+    while (loadedCount < maxQuantity) {
+        const availablePositions = findAvailablePositions(clientBlock, orientation.width, orientation.depth);
+        if (placements.length === 0) {
+            console.log(`   📍 Posições disponíveis: ${availablePositions.length}`);
         }
+
+        const position = availablePositions[0];
+        if (!position) {
+            break;
+        }
+
+        const stack = createStackAtPosition(product, position, orientation, clientBlock);
+        if (!stack) {
+            break;
+        }
+
+        if (!clientBlock.searchCursor) {
+            clientBlock.searchCursor = { x: position.x, z: position.z };
+        }
+
+        const stackedItems = stackItemsInPosition(product, stack, orientation, maxQuantity - loadedCount);
+        if (stackedItems.length === 0) {
+            break;
+        }
+
+        placements.push(...stackedItems);
+        loadedCount += stackedItems.length;
+
+        console.log(`   📦 Pilha em (${position.x.toFixed(2)}, ${position.z.toFixed(2)}): ${stackedItems.length} unidades`);
     }
     
+    return placements;
+}
+
+function stackItemsOnExistingStacks(product, orientation, clientBlock, maxItems) {
+    if (!Array.isArray(clientBlock.stacks) || clientBlock.stacks.length === 0 || maxItems <= 0) {
+        return [];
+    }
+
+    const placements = [];
+    let remainingItems = maxItems;
+    const candidateStacks = [...clientBlock.stacks].sort((stackA, stackB) => {
+        if (Math.abs(stackB.x - stackA.x) > 1e-6) {
+            return stackB.x - stackA.x;
+        }
+        if (Math.abs(stackA.z - stackB.z) > 1e-6) {
+            return stackA.z - stackB.z;
+        }
+        return stackA.currentTopY - stackB.currentTopY;
+    });
+
+    for (const stack of candidateStacks) {
+        if (remainingItems <= 0) {
+            break;
+        }
+        if (!stack.canPlaceItem(orientation.width, orientation.depth, orientation.height)) {
+            continue;
+        }
+
+        const stackedItems = stackItemsInPosition(product, stack, orientation, remainingItems);
+        if (stackedItems.length === 0) {
+            continue;
+        }
+
+        placements.push(...stackedItems);
+        remainingItems -= stackedItems.length;
+    }
+
     return placements;
 }
 
 function findAvailablePositions(clientBlock, itemWidth, itemDepth) {
     const positions = [];
     const gap = GAP_STACK;
-    
-    // Busca sistemática
-    const startX = clientBlock.startX;
-    const startZ = MIN_Z_EDGE;
-    
-    let currentX = startX - itemWidth/2;
-    while (currentX >= clientBlock.endX + itemWidth/2) {
-        let currentZ = startZ;
-        
-        while (currentZ <= MAX_Z_EDGE - itemDepth/2) {
+
+    const relevantStacks = stacks.filter((stack) => clientBlock.containsPosition(stack.x, stack.baseWidth));
+    const xCandidates = buildAxisCandidates(
+        clientBlock.startX - itemWidth / 2,
+        clientBlock.endX + itemWidth / 2,
+        relevantStacks,
+        itemWidth,
+        'x'
+    );
+    const zCandidates = buildAxisCandidates(
+        MIN_Z_EDGE + itemDepth / 2,
+        MAX_Z_EDGE - itemDepth / 2,
+        relevantStacks,
+        itemDepth,
+        'z'
+    );
+
+    for (const currentX of xCandidates) {
+        for (const currentZ of zCandidates) {
+            if (!isPositionWithinClientCursor(currentX, currentZ, clientBlock.searchCursor)) {
+                continue;
+            }
+            if (!isPositionWithinClientBoundary(currentX, currentZ, itemWidth, itemDepth, clientBlock)) {
+                continue;
+            }
+            if (!isPositionConnectedToClientStacks(currentX, currentZ, itemWidth, itemDepth, clientBlock)) {
+                continue;
+            }
             if (isValidPosition(currentX, currentZ, itemWidth, itemDepth, clientBlock, gap)) {
                 positions.push({ x: currentX, z: currentZ });
             }
-            currentZ += itemDepth + gap;
         }
-        
-        currentX -= itemWidth + gap;
     }
     
     return positions;
+}
+
+function buildAxisCandidates(startValue, endValue, relevantStacks, itemSize, axis) {
+    const gap = GAP_STACK;
+    const candidates = [];
+    const seen = new Set();
+
+    const addCandidate = (value) => {
+        if (!Number.isFinite(value)) {
+            return;
+        }
+        if (axis === 'x') {
+            if (value < endValue - 1e-6 || value > startValue + 1e-6) {
+                return;
+            }
+        } else if (value < startValue - 1e-6 || value > endValue + 1e-6) {
+            return;
+        }
+
+        const key = value.toFixed(6);
+        if (seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+        candidates.push(value);
+    };
+
+    addCandidate(startValue);
+
+    relevantStacks.forEach((stack) => {
+        if (axis === 'x') {
+            addCandidate(stack.x - stack.baseWidth / 2 - gap - itemSize / 2);
+            addCandidate(stack.x + stack.baseWidth / 2 + gap + itemSize / 2);
+            return;
+        }
+
+        addCandidate(stack.z - stack.baseDepth / 2 - gap - itemSize / 2);
+        addCandidate(stack.z + stack.baseDepth / 2 + gap + itemSize / 2);
+    });
+
+    return candidates.sort((a, b) => axis === 'x' ? b - a : a - b);
+}
+
+function isPositionWithinClientCursor(x, z, searchCursor) {
+    if (!searchCursor) {
+        return true;
+    }
+
+    if (x < searchCursor.x - 1e-6) {
+        return true;
+    }
+
+    if (Math.abs(x - searchCursor.x) <= 1e-6 && z >= searchCursor.z - 1e-6) {
+        return true;
+    }
+
+    return false;
+}
+
+function isPositionWithinClientBoundary(x, z, itemWidth, itemDepth, clientBlock) {
+    if (!Array.isArray(clientBlock.boundaryStacks) || clientBlock.boundaryStacks.length === 0) {
+        return true;
+    }
+
+    const itemRight = x + itemWidth / 2;
+    const itemFront = z - itemDepth / 2;
+    const itemBack = z + itemDepth / 2;
+
+    let allowedRightEdge = clientBlock.startX + GAP_STACK;
+    let hasBoundaryOverlap = false;
+
+    clientBlock.boundaryStacks.forEach((stack) => {
+        const stackFront = stack.z - stack.baseDepth / 2;
+        const stackBack = stack.z + stack.baseDepth / 2;
+        const zOverlap = !(itemBack <= stackFront + GAP_STACK || itemFront >= stackBack - GAP_STACK);
+        if (!zOverlap) {
+            return;
+        }
+
+        hasBoundaryOverlap = true;
+        const stackFrontEdgeX = stack.x - stack.baseWidth / 2;
+        allowedRightEdge = Math.min(allowedRightEdge, stackFrontEdgeX + GAP_STACK);
+    });
+
+    if (!hasBoundaryOverlap) {
+        return true;
+    }
+
+    return itemRight <= allowedRightEdge + 1e-6;
+}
+
+function isPositionConnectedToClientStacks(x, z, itemWidth, itemDepth, clientBlock) {
+    if (!Array.isArray(clientBlock.stacks) || clientBlock.stacks.length === 0) {
+        return true;
+    }
+
+    const itemLeft = x - itemWidth / 2;
+    const itemRight = x + itemWidth / 2;
+    const itemFront = z - itemDepth / 2;
+    const itemBack = z + itemDepth / 2;
+    const tolerance = GAP_STACK + 1e-6;
+
+    return clientBlock.stacks.some((stack) => {
+        const contact = getStackContactMetrics(x, z, itemWidth, itemDepth, stack);
+        return contact.touchesInX || contact.touchesInZ;
+    });
+}
+
+function getStackContactMetrics(x, z, itemWidth, itemDepth, stack) {
+    const itemLeft = x - itemWidth / 2;
+    const itemRight = x + itemWidth / 2;
+    const itemFront = z - itemDepth / 2;
+    const itemBack = z + itemDepth / 2;
+    const tolerance = GAP_STACK + 1e-6;
+
+    const stackLeft = stack.x - stack.baseWidth / 2;
+    const stackRight = stack.x + stack.baseWidth / 2;
+    const stackFront = stack.z - stack.baseDepth / 2;
+    const stackBack = stack.z + stack.baseDepth / 2;
+
+    const zRangesOverlap = !(itemBack <= stackFront + 1e-6 || itemFront >= stackBack - 1e-6);
+    const xRangesOverlap = !(itemRight <= stackLeft + 1e-6 || itemLeft >= stackRight - 1e-6);
+    const touchesInX = zRangesOverlap && (
+        Math.abs(itemLeft - stackRight) <= tolerance ||
+        Math.abs(itemRight - stackLeft) <= tolerance
+    );
+    const touchesInZ = xRangesOverlap && (
+        Math.abs(itemFront - stackBack) <= tolerance ||
+        Math.abs(itemBack - stackFront) <= tolerance
+    );
+
+    return { touchesInX, touchesInZ };
+}
+
+function getPlacementsFrontEdgeX(placements) {
+    if (!Array.isArray(placements) || placements.length === 0) {
+        return null;
+    }
+
+    const frontEdge = placements.reduce((frontEdgeValue, entry) => {
+        const leftEdge = Number(entry?.position?.x) - Number(entry?.position?.width || 0) / 2;
+        return Number.isFinite(leftEdge) ? Math.min(frontEdgeValue, leftEdge) : frontEdgeValue;
+    }, Number.POSITIVE_INFINITY);
+
+    return Number.isFinite(frontEdge) ? frontEdge : null;
 }
 
 function isValidPosition(x, z, itemWidth, itemDepth, clientBlock, gap) {
@@ -375,20 +667,7 @@ function stackItemsInPosition(product, stack, orientation, maxItems) {
         }
         
         // Criar item
-        const item = {
-            name: product.name,
-            dimensions: [...product.dimensions],
-            color: product.color,
-            clientKey: product.clientKey,
-            clientName: product.clientName,
-            sourceIndex: product.sourceIndex,
-            type: 'box',
-            weight: 1,
-            footprint: product.dimensions[0] * product.dimensions[2],
-            volume: product.dimensions[0] * product.dimensions[1] * product.dimensions[2],
-            stackable: true,
-            fragile: false
-        };
+        const item = createPackedItem(product);
         
         // Colocar item na pilha
         const placement = stack.placeItem(
@@ -404,7 +683,7 @@ function stackItemsInPosition(product, stack, orientation, maxItems) {
             itemCount++;
             
             // Verificar limite de altura
-            if (placement.y + orientation.height / 2 > TRUCK_DIMENSIONS.height - 0.05) {
+            if (placement.y + orientation.height / 2 > TRUCK_DIMENSIONS.height - TOP_CLEARANCE) {
                 break;
             }
         } else {
@@ -413,4 +692,21 @@ function stackItemsInPosition(product, stack, orientation, maxItems) {
     }
     
     return placements;
+}
+
+function createPackedItem(product) {
+    return {
+        name: product.name,
+        dimensions: [...product.dimensions],
+        color: product.color,
+        clientKey: product.clientKey,
+        clientName: product.clientName,
+        sourceIndex: product.sourceIndex,
+        type: 'box',
+        weight: 1,
+        footprint: product.dimensions[0] * product.dimensions[2],
+        volume: product.dimensions[0] * product.dimensions[1] * product.dimensions[2],
+        stackable: true,
+        fragile: false
+    };
 }

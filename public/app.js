@@ -3900,16 +3900,18 @@ let packingMetrics3D = null;
 
 // Cores fixas por pedido/cliente na visualização 3D
 const ORDER_COLOR_PALETTE = [
-    0xff6b6b,
-    0x4ecdc4,
-    0x45b7d1,
-    0xf7b267,
-    0x7d8cff,
-    0x96ceb4,
-    0xffe66d,
-    0xbb8fce,
-    0xf25f5c,
-    0x70c1b3
+    0xe76f51,
+    0x2a9d8f,
+    0xe9c46a,
+    0x264653,
+    0xf4a261,
+    0x457b9d,
+    0x8d99ae,
+    0xef476f,
+    0x06d6a0,
+    0x118ab2,
+    0xbc6c25,
+    0x6a4c93
 ];
 
 function getOrderColor(orderKey) {

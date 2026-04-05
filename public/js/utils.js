@@ -4,9 +4,9 @@
 
 // Constantes do caminhão
 const TRUCK_DIMENSIONS = {
-    length: 13.6,
+    length: 14.5,
     width: 2.45,
-    height: 2.50
+    height: 1.70
 };
 
 // Constantes
@@ -15,7 +15,8 @@ const GAP_CLIENTE = 0.05;
 const MIN_Z_EDGE = -TRUCK_DIMENSIONS.width / 2 + GAP_STACK;
 const MAX_Z_EDGE = TRUCK_DIMENSIONS.width / 2 - GAP_STACK;
 const MIN_X_LIMIT = -TRUCK_DIMENSIONS.length / 2 + GAP_STACK;
-const FLOOR_Y = 0.1;
+const FLOOR_Y = 0.01;
+const TOP_CLEARANCE = 0.01;
 const REAR_START_X = TRUCK_DIMENSIONS.length / 2 - GAP_STACK;
 
 // Exportar constantes para uso global
@@ -26,9 +27,50 @@ window.MIN_Z_EDGE = MIN_Z_EDGE;
 window.MAX_Z_EDGE = MAX_Z_EDGE;
 window.MIN_X_LIMIT = MIN_X_LIMIT;
 window.FLOOR_Y = FLOOR_Y;
+window.TOP_CLEARANCE = TOP_CLEARANCE;
 window.REAR_START_X = REAR_START_X;
 
+function normalizeDimensions(dimensions) {
+    if (!Array.isArray(dimensions) || dimensions.length < 3) return dimensions;
+
+    const numbers = dimensions.slice(0, 3).map((value) => Number(value));
+    if (numbers.some((value) => !Number.isFinite(value) || value <= 0)) return dimensions;
+
+    const maxDim = Math.max(...numbers);
+
+    // Heurística:
+    // - > 50  => mm (ex: 320, 220, 900)
+    // - > 5   => cm (ex: 32, 22, 90)
+    // - <= 5  => já está em metros (ex: 0.32, 0.22, 0.90)
+    if (maxDim > 50) {
+        return numbers.map((value) => value / 1000);
+    }
+
+    if (maxDim > 5) {
+        return numbers.map((value) => value / 100);
+    }
+
+    return numbers;
+}
+
+window.normalizeDimensions = normalizeDimensions;
+
 // Funções de cor
+const CLIENT_COLOR_PALETTE = [
+    0xe76f51,
+    0x2a9d8f,
+    0xe9c46a,
+    0x264653,
+    0xf4a261,
+    0x457b9d,
+    0x8d99ae,
+    0xef476f,
+    0x06d6a0,
+    0x118ab2,
+    0xbc6c25,
+    0x6a4c93
+];
+
 function hashOrderKey(orderKey) {
     const normalizedKey = String(orderKey || 'pedido');
     let hash = 0;
@@ -75,10 +117,7 @@ function hslToHex(h, s, l) {
 
 function getOrderColor(orderKey) {
     const hash = hashOrderKey(orderKey);
-    const hue = (hash * 137.508) % 360;
-    const saturation = 62 + (hash % 14);
-    const lightness = 50 + ((Math.floor(hash / 7)) % 10);
-    return hslToHex(hue, saturation, lightness);
+    return CLIENT_COLOR_PALETTE[hash % CLIENT_COLOR_PALETTE.length];
 }
 
 // Funções de UI

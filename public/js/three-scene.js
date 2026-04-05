@@ -2,43 +2,53 @@
 // CENA THREE.JS
 // ========================================================================
 
-let scene, camera, renderer, cargoGroup;
-let isLoading = false;
-let currentRenderToken = 0;
+// Estado compartilhado entre arquivos (sempre usar window.*)
+window.scene = window.scene || null;
+window.camera = window.camera || null;
+window.renderer = window.renderer || null;
+window.cargoGroup = window.cargoGroup || null;
+window.instanceGroups = window.instanceGroups || {};
 
-// Cache para geometrias e materiais
+// Cache para geometrias e materiais (pode ficar local aqui)
 let geometryCache = new Map();
 let materialCache = new Map();
 
-// Instanced rendering groups
-let instanceGroups = {};
-
-// Exportar variáveis para uso global
-window.scene = scene;
-window.camera = camera;
-window.renderer = renderer;
-window.cargoGroup = cargoGroup;
-window.isLoading = isLoading;
-window.currentRenderToken = currentRenderToken;
-window.instanceGroups = instanceGroups;
-
 function initScene() {
     const container = document.getElementById('canvas-container');
+    if (!container) {
+        console.warn('canvas-container não encontrado.');
+        return;
+    }
+
+    // Garantir dimensões mínimas (evita renderer 0x0 quando CSS não carregou)
+    if (!container.style.height) {
+        container.style.height = '600px';
+    }
+
+    const width = container.clientWidth || Math.max(320, window.innerWidth);
+    const height = container.clientHeight || 600;
     
     // Criar cena Three.js
-    scene = new THREE.Scene();
+    const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf0f0f0);
+    window.scene = scene;
+
+    // Debug helpers (garante referência visual)
+    scene.add(new THREE.AxesHelper(2));
+    scene.add(new THREE.GridHelper(20, 20));
     
     // Criar camera
-    camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 1000);
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
     camera.position.set(15, 10, 15);
     camera.lookAt(0, 0, 0);
+    window.camera = camera;
     
     // Criar renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
     renderer.shadowMap.enabled = true;
     container.appendChild(renderer.domElement);
+    window.renderer = renderer;
     
     // Iluminação
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
@@ -46,6 +56,14 @@ function initScene() {
     directionalLight.position.set(20, 30, 20);
     directionalLight.castShadow = true;
     scene.add(directionalLight);
+
+    // Cubo de teste (se isso não aparecer, o problema é canvas/câmera)
+    const testCube = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4, 0.4, 0.4),
+        new THREE.MeshStandardMaterial({ color: 0xff00ff })
+    );
+    testCube.position.set(0, 0.4, 0);
+    scene.add(testCube);
     
     // Criar caminhão
     createTruck();
@@ -61,11 +79,13 @@ function initScene() {
 function createTruck() {
     const { length, width, height } = TRUCK_DIMENSIONS;
     const truck = new THREE.Group();
+    const floorThickness = 0.02;
     
     // Chão
-    const floorGeometry = new THREE.BoxGeometry(length, 0.2, width);
+    const floorGeometry = new THREE.BoxGeometry(length, floorThickness, width);
     const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
     const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.position.y = -floorThickness / 2;
     floor.receiveShadow = true;
     truck.add(floor);
     
@@ -107,6 +127,8 @@ function setupControls() {
         targetY += (mouseY - targetY) * 0.05;
         
         const radius = 20;
+        const camera = window.camera;
+        if (!camera) return;
         camera.position.x = Math.sin(targetX * Math.PI) * radius;
         camera.position.z = Math.cos(targetX * Math.PI) * radius;
         camera.position.y = 10 + targetY * 5;
@@ -116,30 +138,45 @@ function setupControls() {
 
 function animate() {
     requestAnimationFrame(animate);
-    
+
+    const scene = window.scene;
+    const camera = window.camera;
+    const renderer = window.renderer;
+    if (!scene || !camera || !renderer) return;
+
     if (scene.userData.updateCamera) {
         scene.userData.updateCamera();
     }
-    
+
     renderer.render(scene, camera);
 }
 
 function onWindowResize() {
     const container = document.getElementById('canvas-container');
-    camera.aspect = container.clientWidth / container.clientHeight;
+    const camera = window.camera;
+    const renderer = window.renderer;
+    if (!camera || !renderer) return;
+
+    const width = container?.clientWidth || Math.max(320, window.innerWidth);
+    const height = container?.clientHeight || 600;
+    camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(width, height);
 }
 
 function resetView() {
-    currentRenderToken++;
+    window.currentRenderToken = (window.currentRenderToken || 0) + 1;
     showLoading(false);
-    camera.position.set(15, 10, 15);
-    camera.lookAt(0, 0, 0);
+    const camera = window.camera;
+    if (camera) {
+        camera.position.set(15, 10, 15);
+        camera.lookAt(0, 0, 0);
+    }
     
-    if (cargoGroup) {
-        scene.remove(cargoGroup);
-        cargoGroup = null;
+    const scene = window.scene;
+    if (scene && window.cargoGroup) {
+        scene.remove(window.cargoGroup);
+        window.cargoGroup = null;
     }
     
     // Resetar estruturas
@@ -147,7 +184,7 @@ function resetView() {
     stacks.length = 0;
     stacksByClient.clear();
     stacksByProduct.clear();
-    instanceGroups = {};
+    window.instanceGroups = {};
     
     document.getElementById('info-panel').style.display = 'none';
 }
@@ -179,19 +216,22 @@ function createBoxMesh(item, position) {
     const instanceKey = `${geometryKey}_${materialKey}`;
     
     // Criar grupo de instancias se não existir
+    const cargoGroup = window.cargoGroup;
+    if (!cargoGroup) return;
+
+    const instanceGroups = window.instanceGroups;
     if (!instanceGroups[instanceKey]) {
         const geometry = getOrCreateGeometry(position.width, position.height, position.depth);
         const material = getOrCreateMaterial(item.color || 0x4287f5);
-        
-        const instancedMesh = new THREE.InstancedMesh(geometry, material, 1000);
-        instancedMesh.instanceMatrix.needsUpdate = true;
-        instancedMesh.castShadow = true;
-        instancedMesh.receiveShadow = true;
+        const instancedMesh = createInstancedMesh(geometry, material, 256);
         
         instanceGroups[instanceKey] = {
             mesh: instancedMesh,
             instances: [],
-            count: 0
+            count: 0,
+            capacity: 256,
+            geometry,
+            material
         };
         
         cargoGroup.add(instancedMesh);
@@ -199,15 +239,16 @@ function createBoxMesh(item, position) {
     
     // Adicionar instância
     const group = instanceGroups[instanceKey];
-    const instanceId = group.count;
-    
-    if (instanceId >= 1000) {
-        return;
+    if (group.count >= group.capacity) {
+        growInstanceGroup(instanceKey, cargoGroup);
     }
+
+    const instanceId = group.count;
     
     const matrix = new THREE.Matrix4();
     matrix.setPosition(position.x, position.y, position.z);
     group.mesh.setMatrixAt(instanceId, matrix);
+    group.mesh.count = instanceId + 1;
     
     group.instances.push({
         item: item,
@@ -217,4 +258,38 @@ function createBoxMesh(item, position) {
     
     group.count++;
     group.mesh.instanceMatrix.needsUpdate = true;
+    return true;
+}
+
+function createInstancedMesh(geometry, material, capacity) {
+    const instancedMesh = new THREE.InstancedMesh(geometry, material, capacity);
+    instancedMesh.count = 0;
+    instancedMesh.instanceMatrix.needsUpdate = true;
+    instancedMesh.castShadow = true;
+    instancedMesh.receiveShadow = true;
+    return instancedMesh;
+}
+
+function growInstanceGroup(instanceKey, cargoGroup) {
+    const group = window.instanceGroups[instanceKey];
+    if (!group) return;
+
+    const nextCapacity = Math.max(group.capacity * 2, group.capacity + 256);
+    const nextMesh = createInstancedMesh(group.geometry, group.material, nextCapacity);
+    const matrix = new THREE.Matrix4();
+
+    for (let index = 0; index < group.count; index++) {
+        group.mesh.getMatrixAt(index, matrix);
+        nextMesh.setMatrixAt(index, matrix);
+    }
+
+    nextMesh.count = group.count;
+    nextMesh.instanceMatrix.needsUpdate = true;
+
+    cargoGroup.remove(group.mesh);
+    group.mesh.dispose?.();
+    cargoGroup.add(nextMesh);
+
+    group.mesh = nextMesh;
+    group.capacity = nextCapacity;
 }
