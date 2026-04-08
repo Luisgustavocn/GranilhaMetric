@@ -2316,6 +2316,14 @@ async function onLaunchOrder() {
   showToast(`Pedido #${response.data.orderId} lançado com sucesso.`);
 }
 
+const CYLINDER_EQUIVALENT_SQUARE_FACTOR = Math.sqrt(Math.PI / 4);
+
+function getEquivalentCylinderPackingSide(diameter) {
+  const numericDiameter = Number(diameter || 0);
+  if (!(numericDiameter > 0)) return 0;
+  return numericDiameter * CYLINDER_EQUIVALENT_SQUARE_FACTOR;
+}
+
 function getOrderItemVisualizationDimensions(item) {
   const height = Number(item.can_height_cm || 0) / 100;
   if (!(height > 0)) return null;
@@ -2323,7 +2331,8 @@ function getOrderItemVisualizationDimensions(item) {
   if (item.can_shape === 'cylinder') {
     const diameter = Number(item.can_diameter_cm || item.can_length_cm || item.can_width_cm || 0) / 100;
     if (!(diameter > 0)) return null;
-    return { width: diameter, height, depth: diameter };
+    const side = getEquivalentCylinderPackingSide(diameter);
+    return { width: side, height, depth: side };
   }
 
   const width = Number(item.can_length_cm || item.can_width_cm || item.can_depth_cm || 0) / 100;
@@ -4960,7 +4969,8 @@ function getCanPackingDimensions(can) {
 
     if (can.shape === 'cylinder') {
         const diameter = Number(can.diameter_cm || can.length_cm || can.width_cm || 0) / 100;
-        return { width: diameter, height, depth: diameter };
+        const side = getEquivalentCylinderPackingSide(diameter);
+        return { width: side, height, depth: side };
     }
 
     return {
@@ -4985,16 +4995,13 @@ function buildVisualizationItems() {
         const quantity = Math.max(0, Number(row.quantity || 0));
         const clientName = String(row.clientName || 'Pedido sem cliente').trim() || 'Pedido sem cliente';
         const color = getOrderColor(clientName);
-        const actualVolume = Number(can.volume_cm3 || 0) / 1000000;
-
         for (let index = 0; index < quantity; index++) {
             items.push({
                 name: can.name,
                 clientKey: clientName,
                 clientName,
                 color,
-                dimensions: [dimensions.width, dimensions.height, dimensions.depth],
-                actualVolume
+                dimensions: [dimensions.width, dimensions.height, dimensions.depth]
             });
         }
     });
@@ -5643,4 +5650,3 @@ document.addEventListener('DOMContentLoaded', () => {
 
     syncVisualization3DPanel();
 });
-

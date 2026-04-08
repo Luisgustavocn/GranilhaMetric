@@ -4,8 +4,6 @@
 
 // Inicialização principal
 function init() {
-    const container = document.getElementById('canvas-container');
-    
     // Carregar dados do localStorage se existir
     loadOrderPreviewData();
     

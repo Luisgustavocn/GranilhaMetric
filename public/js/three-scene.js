@@ -8,6 +8,7 @@ window.camera = window.camera || null;
 window.renderer = window.renderer || null;
 window.cargoGroup = window.cargoGroup || null;
 window.instanceGroups = window.instanceGroups || {};
+const SHOW_SCENE_DEBUG = false;
 
 // Cache para geometrias e materiais (pode ficar local aqui)
 let geometryCache = new Map();
@@ -33,9 +34,10 @@ function initScene() {
     scene.background = new THREE.Color(0xf0f0f0);
     window.scene = scene;
 
-    // Debug helpers (garante referência visual)
-    scene.add(new THREE.AxesHelper(2));
-    scene.add(new THREE.GridHelper(20, 20));
+    if (SHOW_SCENE_DEBUG) {
+        scene.add(new THREE.AxesHelper(2));
+        scene.add(new THREE.GridHelper(20, 20));
+    }
     
     // Criar camera
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
@@ -57,14 +59,6 @@ function initScene() {
     directionalLight.castShadow = true;
     scene.add(directionalLight);
 
-    // Cubo de teste (se isso não aparecer, o problema é canvas/câmera)
-    const testCube = new THREE.Mesh(
-        new THREE.BoxGeometry(0.4, 0.4, 0.4),
-        new THREE.MeshStandardMaterial({ color: 0xff00ff })
-    );
-    testCube.position.set(0, 0.4, 0);
-    scene.add(testCube);
-    
     // Criar caminhão
     createTruck();
     
@@ -182,8 +176,6 @@ function resetView() {
     // Resetar estruturas
     clientBlocks.length = 0;
     stacks.length = 0;
-    stacksByClient.clear();
-    stacksByProduct.clear();
     window.instanceGroups = {};
     
     document.getElementById('info-panel').style.display = 'none';
