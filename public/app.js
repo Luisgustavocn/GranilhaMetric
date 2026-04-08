@@ -1,5 +1,7 @@
 const state = {
   user: null,
+  availableModules: [],
+  companies: [],
   cans: [],
   trucks: [],
   users: [],
@@ -12,6 +14,7 @@ const state = {
   selectedTruckId: null,
   selectedUserId: null,
   selectedOrderId: null,
+  selectedCompanyId: null,
   unavailableTruckIds: [],
   truckAvailabilityById: {},
   todayBusyTruckIds: [],
@@ -42,11 +45,35 @@ const state = {
     search: '',
     client: 'all'
   },
+  platformSection: 'portfolio',
+  companyWizardStep: 1,
+  expandedModuleKey: 'loading3d',
   currentView: 'inicio-section',
   csrfToken: null,
   modal: null,
   confirmModal: null
 };
+
+const MODULE_DEFINITIONS = [
+  {
+    key: 'loading3d',
+    label: 'Carregamento 3D',
+    views: ['inicio-section', 'calculadora-section', 'pedidos-section', 'agenda-section', 'clientes-section', 'latas-section', 'caminhoes-section'],
+    navItems: [
+      { target: 'inicio-section', label: 'Inicio' },
+      { target: 'calculadora-section', label: 'Lancar pedido' },
+      { target: 'pedidos-section', label: 'Pedidos' },
+      { target: 'agenda-section', label: 'Agenda' },
+      { target: 'clientes-section', label: 'Clientes' },
+      { target: 'latas-section', label: 'Produtos' },
+      { target: 'caminhoes-section', label: 'Caminhoes' }
+    ]
+  }
+];
+
+const VIEW_MODULE_MAP = new Map(
+  MODULE_DEFINITIONS.flatMap((module) => module.views.map((view) => [view, module.key]))
+);
 
 const loginCard = document.getElementById('login-card');
 const appSection = document.getElementById('app');
@@ -61,7 +88,14 @@ const toast = document.getElementById('toast');
 const resultBox = document.getElementById('calculation-result');
 
 const loginForm = document.getElementById('login-form');
+const companyForm = document.getElementById('company-form');
+const clientForm = document.getElementById('client-form');
 const userForm = document.getElementById('user-form');
+const userModulesInputs = document.getElementById('user-modules-inputs');
+const companyModulesInputs = document.getElementById('company-modules-inputs');
+const companyFormBackBtn = document.getElementById('company-form-back-btn');
+const companyFormNextBtn = document.getElementById('company-form-next-btn');
+const companyFormSubmitBtn = document.getElementById('company-form-submit-btn');
 const categoryForm = document.getElementById('category-form');
 const canForm = document.getElementById('can-form');
 const truckForm = document.getElementById('truck-form');
@@ -117,9 +151,11 @@ const cargoClientFilter = document.getElementById('cargo-client-filter');
 const cargoClearFiltersBtn = document.getElementById('cargo-clear-filters-btn');
 const cargoFilterCount = document.getElementById('cargo-filter-count');
 const categoriesBody = document.getElementById('categories-body');
+const categoriesOperationalBody = document.getElementById('categories-body-operational');
 const clientsBody = document.getElementById('clients-body');
 const trucksBody = document.getElementById('trucks-body');
 const usersBody = document.getElementById('users-body');
+const companiesGrid = document.getElementById('companies-grid');
 const ordersBody = document.getElementById('orders-body');
 const manualResultBox = document.getElementById('manual-result');
 const entityModalOverlay = document.getElementById('entity-modal-overlay');
@@ -139,18 +175,34 @@ const clientModalTitle = document.getElementById('client-modal-title');
 const clientModalForm = document.getElementById('client-modal-form');
 const cancelClientBtn = document.getElementById('cancel-client-btn');
 const addClientBtn = document.getElementById('add-client-btn');
+const addCategoryBtn = document.getElementById('add-category-btn');
+const addCanBtn = document.getElementById('add-can-btn');
+const addTruckBtn = document.getElementById('add-truck-btn');
 const clientSearch = document.getElementById('client-search');
 const clientStatusFilter = document.getElementById('client-status-filter');
 const clientStateFilter = document.getElementById('client-state-filter');
 const exportClientsBtn = document.getElementById('export-clients-btn');
 const refreshClientsBtn = document.getElementById('refresh-clients-btn');
 const calculationModeInputs = document.querySelectorAll('input[name="calculationMode"]');
-const sideNavItems = document.querySelectorAll('.nav-list li[data-target]');
-const navAdminItem = document.getElementById('nav-admin-item');
+const sideNavItems = document.querySelectorAll('.nav-option[data-target]');
+const sideNavGroups = document.querySelectorAll('.nav-module-group[data-module-key]');
+const sideNavModuleToggles = document.querySelectorAll('.nav-module-toggle[data-module-key]');
+const navAdminItem = document.getElementById('nav-admin-item-accordion');
 const mobileNavSelect = document.getElementById('mobile-nav-select');
 const mobileNavAdminOption = document.getElementById('mobile-nav-admin-option');
 const viewPanes = document.querySelectorAll('.view-pane');
 const summaryStats = document.getElementById('summary-stats');
+const adminPanelDescription = document.getElementById('admin-panel-description');
+const platformAdminShell = document.getElementById('platform-admin-shell');
+const companyAdminShell = document.getElementById('company-admin-shell');
+const companyAdminUserCard = document.getElementById('company-admin-user-card');
+const companyAdminPlatformOnlyCards = [];
+const masterPortfolioBtn = document.getElementById('master-portfolio-btn');
+const masterOnboardingBtn = document.getElementById('master-onboarding-btn');
+const masterTabPortfolio = document.getElementById('master-tab-portfolio');
+const masterTabOnboarding = document.getElementById('master-tab-onboarding');
+const platformPortfolioPanel = document.getElementById('platform-portfolio-panel');
+const platformOnboardingPanel = document.getElementById('platform-onboarding-panel');
 const inicioOrdersList = document.getElementById('inicio-orders-list');
 const inicioTrucksList = document.getElementById('inicio-trucks-list');
 const inicioAlertsList = document.getElementById('inicio-alerts-list');
@@ -187,7 +239,16 @@ function bindEvents() {
   loginForm.addEventListener('submit', onLogin);
   logoutBtn.addEventListener('click', onLogout);
   accountMenuToggle?.addEventListener('click', onAccountMenuToggle);
+  companyForm?.addEventListener('submit', onCreateCompany);
+  clientForm?.addEventListener('submit', onCreateOperationalClient);
+  companyFormBackBtn?.addEventListener('click', () => setCompanyWizardStep(state.companyWizardStep - 1));
+  companyFormNextBtn?.addEventListener('click', onAdvanceCompanyWizard);
   userForm.addEventListener('submit', onCreateUser);
+  userForm?.elements?.namedItem('role')?.addEventListener('change', syncUserFormAccess);
+  masterPortfolioBtn?.addEventListener('click', () => setPlatformSection('portfolio'));
+  masterOnboardingBtn?.addEventListener('click', () => setPlatformSection('onboarding'));
+  masterTabPortfolio?.addEventListener('click', () => setPlatformSection('portfolio'));
+  masterTabOnboarding?.addEventListener('click', () => setPlatformSection('onboarding'));
   categoryForm.addEventListener('submit', onCreateCategory);
   canForm.addEventListener('submit', onCreateCan);
   truckForm.addEventListener('submit', onCreateTruck);
@@ -203,6 +264,9 @@ function bindEvents() {
   addManualAllocationBtn.addEventListener('click', onAddManualAllocation);
   launchOrderBtn.addEventListener('click', onLaunchOrder);
   addClientBtn.addEventListener('click', onOpenClientModal);
+  addCategoryBtn?.addEventListener('click', onOpenCategoryModal);
+  addCanBtn?.addEventListener('click', onOpenCanCreateModal);
+  addTruckBtn?.addEventListener('click', onOpenTruckCreateModal);
   closeClientModalBtn.addEventListener('click', onCloseClientModal);
   cancelClientBtn.addEventListener('click', onCloseClientModal);
   clientModalForm.addEventListener('submit', onSaveClient);
@@ -263,6 +327,14 @@ function bindEvents() {
   sideNavItems.forEach((item) => {
     item.addEventListener('click', () => onSideNavClick(item));
   });
+  sideNavModuleToggles.forEach((toggle) => {
+    toggle.addEventListener('click', () => {
+      const moduleKey = toggle.dataset.moduleKey;
+      if (!moduleKey) return;
+      state.expandedModuleKey = moduleKey;
+      syncExpandedModules();
+    });
+  });
   document.addEventListener('click', onDocumentClick);
   mobileNavSelect?.addEventListener('change', () => {
     if (mobileNavSelect.value) {
@@ -283,6 +355,165 @@ function bindEvents() {
   syncOrderFilterInputs();
 }
 
+function getAvailableModules() {
+  const allowedKeys = new Set(MODULE_DEFINITIONS.map((module) => module.key));
+  const source = Array.isArray(state.availableModules) && state.availableModules.length
+    ? state.availableModules
+    : MODULE_DEFINITIONS;
+
+  const normalized = source.filter((module) => allowedKeys.has(module.key));
+  return normalized.length ? normalized : MODULE_DEFINITIONS;
+}
+
+function getPlatformSection() {
+  return state.platformSection === 'onboarding' ? 'onboarding' : 'portfolio';
+}
+
+function setPlatformSection(section) {
+  state.platformSection = section === 'onboarding' ? 'onboarding' : 'portfolio';
+  syncPlatformSection();
+}
+
+function syncPlatformSection() {
+  const isOnboarding = getPlatformSection() === 'onboarding';
+  platformPortfolioPanel?.classList.toggle('hidden', isOnboarding);
+  platformOnboardingPanel?.classList.toggle('hidden', !isOnboarding);
+  masterTabPortfolio?.classList.toggle('active', !isOnboarding);
+  masterTabOnboarding?.classList.toggle('active', isOnboarding);
+}
+
+function setCompanyWizardStep(step) {
+  const nextStep = Math.max(1, Math.min(3, Number(step) || 1));
+  state.companyWizardStep = nextStep;
+
+  document.querySelectorAll('[data-company-step]').forEach((section) => {
+    section.classList.toggle('hidden', Number(section.dataset.companyStep) !== nextStep);
+  });
+
+  [1, 2, 3].forEach((currentStep) => {
+    const indicator = document.getElementById(`company-step-${currentStep}-indicator`);
+    if (!indicator) return;
+    indicator.classList.toggle('active', currentStep === nextStep);
+    indicator.classList.toggle('done', currentStep < nextStep);
+  });
+
+  if (companyFormBackBtn) companyFormBackBtn.classList.toggle('hidden', nextStep === 1);
+  if (companyFormNextBtn) companyFormNextBtn.classList.toggle('hidden', nextStep === 3);
+  if (companyFormSubmitBtn) companyFormSubmitBtn.classList.toggle('hidden', nextStep !== 3);
+}
+
+function getCompanyWizardFields(step) {
+  const fieldsByStep = {
+    1: ['name', 'status', 'contactName', 'contactEmail', 'contactPhone', 'document'],
+    2: ['adminName', 'adminEmail', 'adminPassword', 'notes'],
+    3: ['billingAmount', 'billingDueDay', 'paymentStatus', 'lastPaymentDate']
+  };
+  return fieldsByStep[step] || [];
+}
+
+function validateCompanyWizardStep(step) {
+  if (!companyForm) return true;
+  for (const fieldName of getCompanyWizardFields(step)) {
+    const field = companyForm.elements.namedItem(fieldName);
+    if (field && typeof field.reportValidity === 'function' && !field.reportValidity()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function onAdvanceCompanyWizard() {
+  if (!validateCompanyWizardStep(state.companyWizardStep)) {
+    return;
+  }
+  setCompanyWizardStep(state.companyWizardStep + 1);
+}
+
+function getUserModules() {
+  return Array.isArray(state.user?.modules) ? state.user.modules : [];
+}
+
+function isPlatformAdmin() {
+  return Boolean(state.user?.isPlatformAdmin);
+}
+
+function hasModuleAccess(moduleKey) {
+  if (!state.user) return false;
+  if (isPlatformAdmin()) return false;
+  if (state.user.role === 'admin') {
+    return Array.isArray(state.user.companyModules) && state.user.companyModules.includes(moduleKey);
+  }
+  return getUserModules().includes(moduleKey);
+}
+
+function canManageOperationalData() {
+  return Boolean(state.user) && !isPlatformAdmin() && hasModuleAccess('loading3d');
+}
+
+function getAllowedViewIds() {
+  const viewIds = MODULE_DEFINITIONS
+    .filter((module) => hasModuleAccess(module.key))
+    .flatMap((module) => module.views);
+
+  if (state.user?.role === 'admin') {
+    viewIds.push('admin-panel');
+  }
+
+  return Array.from(new Set(viewIds));
+}
+
+function getDefaultView() {
+  return getAllowedViewIds()[0] || 'inicio-section';
+}
+
+function formatModuleList(modules = []) {
+  const labelsByKey = new Map(getAvailableModules().map((module) => [module.key, module.label]));
+  if (!Array.isArray(modules) || !modules.length) {
+    return 'Nenhum modulo liberado';
+  }
+
+  return modules.map((moduleKey) => labelsByKey.get(moduleKey) || moduleKey).join(', ');
+}
+
+function formatCompanyModuleScope(modules = []) {
+  const base = formatModuleList(modules);
+  if (!modules.length) return base;
+  return `${base} • inclui Dashboard, Operacoes, Clientes, Produtos e Caminhoes`;
+}
+
+function formatCurrency(value) {
+  const amount = Number(value || 0);
+  return amount.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function formatPaymentStatus(status) {
+  const map = {
+    pending: 'Pendente',
+    paid: 'Pago',
+    overdue: 'Em atraso'
+  };
+  return map[String(status || '').trim()] || 'Nao informado';
+}
+
+function buildModuleCheckboxes(selectedModules = [], disabled = false) {
+  const selected = new Set(selectedModules);
+  return getAvailableModules().map((module) => `
+    <label class="module-option module-option-full ${disabled ? 'module-option-disabled' : ''}">
+      <div class="module-option-main">
+        <input
+          type="checkbox"
+          name="modules"
+          value="${escapeHtml(module.key)}"
+          ${selected.has(module.key) ? 'checked' : ''}
+          ${disabled ? 'disabled' : ''}
+        />
+        <span>${escapeHtml(module.label)}</span>
+      </div>
+      <small class="module-option-description">Inclui Dashboard, Operacoes, Clientes, Produtos e Caminhoes.</small>
+    </label>
+  `).join('');
+}
+
 async function tryLoadSession() {
   const response = await api('/api/me');
   if (!response.ok) {
@@ -292,6 +523,7 @@ async function tryLoadSession() {
   }
 
   state.user = response.data.user;
+  state.availableModules = response.data.availableModules || MODULE_DEFINITIONS;
   state.csrfToken = response.data.csrfToken || null;
   await loadData();
   renderApp();
@@ -312,6 +544,7 @@ async function onLogin(event) {
   }
 
   state.user = response.data.user;
+  state.availableModules = response.data.availableModules || MODULE_DEFINITIONS;
   state.csrfToken = response.data.csrfToken || null;
   loginForm.reset();
   state.cargoItems = [];
@@ -324,23 +557,49 @@ async function onLogout() {
   closeAccountMenu();
   await api('/api/logout', { method: 'POST', body: {} });
   state.user = null;
+  state.availableModules = [];
   state.csrfToken = null;
   state.cargoItems = [];
   renderLoggedOut();
 }
 
 async function loadData() {
+  if (isPlatformAdmin()) {
+    const companiesRes = await api('/api/platform/companies');
+    state.companies = companiesRes.ok ? companiesRes.data.companies : [];
+    state.users = [];
+    state.cans = [];
+    state.categories = [];
+    state.clients = [];
+    state.trucks = [];
+    state.orders = [];
+    state.todayBusyTruckIds = [];
+    state.todayBusyTrucks = [];
+    state.todayTruckAvailabilityById = {};
+    state.unavailableTruckIds = [];
+    state.truckAvailabilityById = {};
+    state.truckSchedule = null;
+    return;
+  }
+
   const todayIso = getTodayDateIso();
+  const inventoryAllowed = hasModuleAccess('loading3d');
+  const clientsAllowed = inventoryAllowed;
+  const fleetAllowed = inventoryAllowed;
+  const operationsAllowed = inventoryAllowed;
+
   const [canRes, categoryRes, clientRes, truckRes, ordersRes, todayAvailabilityRes] = await Promise.all([
-    api('/api/cans'),
-    api('/api/can-categories'),
-    api('/api/clients'),
-    api('/api/trucks'),
-    api('/api/orders'),
-    api(`/api/truck-availability?startDate=${encodeURIComponent(todayIso)}&endDate=${encodeURIComponent(todayIso)}`)
+    inventoryAllowed ? api('/api/cans') : Promise.resolve({ ok: true, data: { cans: [] } }),
+    inventoryAllowed ? api('/api/can-categories') : Promise.resolve({ ok: true, data: { categories: [] } }),
+    clientsAllowed ? api('/api/clients') : Promise.resolve({ ok: true, data: { clients: [] } }),
+    fleetAllowed ? api('/api/trucks') : Promise.resolve({ ok: true, data: { trucks: [] } }),
+    operationsAllowed ? api('/api/orders') : Promise.resolve({ ok: true, data: { orders: [] } }),
+    operationsAllowed
+      ? api(`/api/truck-availability?startDate=${encodeURIComponent(todayIso)}&endDate=${encodeURIComponent(todayIso)}`)
+      : Promise.resolve({ ok: true, data: { availability: [], busyTruckIds: [], busyTrucks: [] } })
   ]);
 
-  if (!canRes.ok || !categoryRes.ok || !clientRes.ok || !truckRes.ok || !ordersRes.ok) {
+  if (!canRes.ok || !categoryRes.ok || !clientRes.ok || !truckRes.ok || !ordersRes.ok || !todayAvailabilityRes.ok) {
     showToast('Erro ao carregar dados iniciais.');
     return;
   }
@@ -350,12 +609,18 @@ async function loadData() {
   state.clients = clientRes.data.clients;
   state.trucks = truckRes.data.trucks;
   state.orders = ordersRes.data.orders;
-  state.todayBusyTruckIds = todayAvailabilityRes.ok ? todayAvailabilityRes.data.busyTruckIds || [] : [];
-  state.todayBusyTrucks = todayAvailabilityRes.ok ? todayAvailabilityRes.data.busyTrucks || [] : [];
-  state.todayTruckAvailabilityById = buildTruckAvailabilityLookup(todayAvailabilityRes.ok ? todayAvailabilityRes.data.availability : []);
+  state.todayBusyTruckIds = todayAvailabilityRes.data.busyTruckIds || [];
+  state.todayBusyTrucks = todayAvailabilityRes.data.busyTrucks || [];
+  state.todayTruckAvailabilityById = buildTruckAvailabilityLookup(todayAvailabilityRes.data.availability || []);
   state.cargoItems = state.cargoItems.filter((item) => state.cans.some((can) => can.id === item.canId));
-  await syncTruckAvailabilityForRange(false);
-  await loadTruckSchedule(false);
+  if (operationsAllowed) {
+    await syncTruckAvailabilityForRange(false);
+    await loadTruckSchedule(false);
+  } else {
+    state.unavailableTruckIds = [];
+    state.truckAvailabilityById = {};
+    state.truckSchedule = null;
+  }
   sanitizeManualSelections();
 
   if (state.user?.role === 'admin') {
@@ -364,6 +629,7 @@ async function loadData() {
   } else {
     state.users = [];
   }
+  state.companies = [];
 }
 
 function renderLoggedOut() {
@@ -385,8 +651,96 @@ function renderLoggedOut() {
   state.truckSchedule = null;
   state.lastCalculation = null;
   state.csrfToken = null;
+  state.availableModules = [];
+  state.companies = [];
+  state.platformSection = 'portfolio';
+  state.companyWizardStep = 1;
+  state.expandedModuleKey = MODULE_DEFINITIONS[0]?.key || null;
   state.currentView = 'inicio-section';
   closeEntityModal();
+}
+
+function syncNavigationAccess() {
+  const accessibleModuleKeys = new Set();
+  sideNavItems.forEach((item) => {
+    const targetId = item.dataset.target;
+    const moduleKey = VIEW_MODULE_MAP.get(targetId);
+    const allowed = targetId === 'admin-panel'
+      ? state.user?.role === 'admin'
+      : !moduleKey || hasModuleAccess(moduleKey);
+    item.classList.toggle('hidden', !allowed);
+    if (allowed && moduleKey) {
+      accessibleModuleKeys.add(moduleKey);
+    }
+  });
+
+  sideNavGroups.forEach((group) => {
+    const moduleKey = group.dataset.moduleKey;
+    const allowed = accessibleModuleKeys.has(moduleKey);
+    group.classList.toggle('hidden', !allowed);
+  });
+
+  if (mobileNavSelect) {
+    Array.from(mobileNavSelect.options).forEach((option) => {
+      const targetId = option.value;
+      const moduleKey = VIEW_MODULE_MAP.get(targetId);
+      const allowed = targetId === 'admin-panel'
+        ? state.user?.role === 'admin'
+        : !moduleKey || hasModuleAccess(moduleKey);
+      option.hidden = !allowed;
+      option.disabled = !allowed;
+    });
+  }
+
+  const expandedAllowed = state.expandedModuleKey && accessibleModuleKeys.has(state.expandedModuleKey);
+  if (!expandedAllowed) {
+    state.expandedModuleKey = accessibleModuleKeys.values().next().value || MODULE_DEFINITIONS[0]?.key || null;
+  }
+  syncExpandedModules();
+}
+
+function syncExpandedModules() {
+  sideNavGroups.forEach((group) => {
+    const moduleKey = group.dataset.moduleKey;
+    const expanded = moduleKey === state.expandedModuleKey;
+    group.classList.toggle('expanded', expanded);
+    const toggle = group.querySelector('.nav-module-toggle');
+    toggle?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  });
+}
+
+function syncUserFormAccess() {
+  if (!userModulesInputs) return;
+
+  const roleSelect = userForm?.elements?.namedItem('role');
+  const canManageAdminRoles = isPlatformAdmin();
+  if (roleSelect && !canManageAdminRoles) {
+    roleSelect.value = 'user';
+    roleSelect.disabled = true;
+  } else if (roleSelect) {
+    roleSelect.disabled = false;
+  }
+  const selectedModules = Array.from(userModulesInputs.querySelectorAll('input[name="modules"]:checked'))
+    .map((input) => input.value);
+  const companyModules = Array.isArray(state.user?.companyModules) && state.user.companyModules.length
+    ? state.user.companyModules
+    : ['loading3d'];
+  const isAdminRole = roleSelect?.value === 'admin';
+  const fallbackModules = canManageAdminRoles
+    ? (selectedModules.length ? selectedModules : companyModules)
+    : companyModules;
+  userModulesInputs.innerHTML = buildModuleCheckboxes(
+    fallbackModules,
+    !canManageAdminRoles || isAdminRole
+  );
+}
+
+function syncCompanyFormAccess() {
+  if (!companyModulesInputs) return;
+  const selectedModules = Array.from(companyModulesInputs.querySelectorAll('input[name="modules"]:checked'))
+    .map((input) => input.value);
+  const fallbackModules = selectedModules.length ? selectedModules : ['loading3d'];
+  companyModulesInputs.innerHTML = buildModuleCheckboxes(fallbackModules);
 }
 
 function renderApp() {
@@ -395,10 +749,35 @@ function renderApp() {
   appSection.classList.remove('hidden');
   accountMenu?.classList.remove('hidden');
   closeAccountMenu();
-  sessionInfo.textContent = `${state.user.name} (${state.user.role})`;
+  sessionInfo.textContent = isPlatformAdmin()
+    ? `${state.user.name} (master da plataforma)`
+    : `${state.user.name} (${state.user.role}) • ${state.user.companyName || ''}`;
   if (accountMenuAvatar) {
     accountMenuAvatar.textContent = getUserInitials(state.user.name);
   }
+
+  syncNavigationAccess();
+  syncUserFormAccess();
+  syncCompanyFormAccess();
+  syncPlatformSection();
+  setCompanyWizardStep(state.companyWizardStep);
+
+  if (adminPanelDescription) {
+    adminPanelDescription.textContent = isPlatformAdmin()
+      ? 'Painel master da plataforma: acompanhe carteira, onboarding e cobranca dos clientes SaaS.'
+      : 'Somente administradores da empresa podem cadastrar usuarios, produtos e caminhoes da propria base.';
+  }
+
+  platformAdminShell?.classList.toggle('hidden', !isPlatformAdmin());
+  companyAdminShell?.classList.toggle('hidden', isPlatformAdmin());
+  companyAdminPlatformOnlyCards?.forEach((card) => {
+    card.classList.toggle('hidden', !isPlatformAdmin());
+  });
+  createClientBtn?.classList.toggle('hidden', !canManageOperationalData());
+  addClientBtn?.classList.toggle('hidden', !canManageOperationalData());
+  addCategoryBtn?.classList.toggle('hidden', !canManageOperationalData());
+  addCanBtn?.classList.toggle('hidden', !canManageOperationalData());
+  addTruckBtn?.classList.toggle('hidden', !canManageOperationalData());
 
   if (state.user.role === 'admin') {
     adminPanel.classList.remove('hidden');
@@ -411,8 +790,12 @@ function renderApp() {
     mobileNavAdminOption?.setAttribute('hidden', 'hidden');
     if (mobileNavAdminOption) mobileNavAdminOption.disabled = true;
     if (state.currentView === 'admin-panel') {
-      state.currentView = 'inicio-section';
+      state.currentView = getDefaultView();
     }
+  }
+
+  if (!getAllowedViewIds().includes(state.currentView) && !(state.user.role === 'admin' && state.currentView === 'admin-panel')) {
+    state.currentView = getDefaultView();
   }
 
   renderHomeOverview();
@@ -422,6 +805,7 @@ function renderApp() {
   renderTrucks();
   renderDateAvailabilityHint();
   renderUsers();
+  renderCompanies();
   renderOrders();
   renderCargoBuilder();
   renderTruckSchedule();
@@ -432,6 +816,11 @@ function renderApp() {
 function onSideNavClick(item) {
   const targetId = item.dataset.target;
   if (!targetId) return;
+  const moduleKey = item.dataset.moduleKey;
+  if (moduleKey) {
+    state.expandedModuleKey = moduleKey;
+    syncExpandedModules();
+  }
   setCurrentView(targetId);
 }
 
@@ -439,6 +828,11 @@ function setActiveSideNav(targetId) {
   sideNavItems.forEach((entry) => {
     entry.classList.toggle('active', entry.dataset.target === targetId);
   });
+  const activeModuleKey = VIEW_MODULE_MAP.get(targetId);
+  if (activeModuleKey) {
+    state.expandedModuleKey = activeModuleKey;
+    syncExpandedModules();
+  }
   if (mobileNavSelect) {
     mobileNavSelect.value = targetId;
   }
@@ -446,8 +840,13 @@ function setActiveSideNav(targetId) {
 
 function setCurrentView(targetId) {
   const target = document.getElementById(targetId);
-  if (!target || (targetId === 'admin-panel' && state.user?.role !== 'admin')) {
-    state.currentView = 'inicio-section';
+  const moduleKey = VIEW_MODULE_MAP.get(targetId);
+  const allowed = targetId === 'admin-panel'
+    ? state.user?.role === 'admin'
+    : !moduleKey || hasModuleAccess(moduleKey);
+
+  if (!target || !allowed) {
+    state.currentView = getDefaultView();
   } else {
     state.currentView = targetId;
   }
@@ -486,6 +885,53 @@ function closeAccountMenu() {
 }
 
 function renderHomeOverview() {
+  if (isPlatformAdmin()) {
+    const activeCompanies = state.companies.filter((company) => company.status === 'active');
+    const totalUsers = state.companies.reduce((sum, company) => sum + Number(company.total_users || 0), 0);
+    const activeUsers = state.companies.reduce((sum, company) => sum + Number(company.active_users || 0), 0);
+    inicioDateLabel.textContent = 'Plataforma';
+    summaryStats.innerHTML = [
+      { label: 'Clientes SaaS', value: state.companies.length, detail: 'Empresas cadastradas na plataforma', tone: 'neutral' },
+      { label: 'Clientes ativos', value: activeCompanies.length, detail: 'Empresas com acesso liberado', tone: 'success' },
+      { label: 'Usuários ativos', value: activeUsers, detail: 'Contas ativas nas empresas', tone: 'accent' },
+      { label: 'Usuários totais', value: totalUsers, detail: 'Contas vinculadas aos clientes', tone: 'warning' }
+    ].map((item) => `
+      <article class="summary-card tone-${item.tone}">
+        <span class="summary-label">${escapeHtml(item.label)}</span>
+        <strong class="summary-value">${escapeHtml(String(item.value))}</strong>
+        <span class="summary-detail">${escapeHtml(item.detail)}</span>
+      </article>
+    `).join('');
+
+    inicioOrdersList.innerHTML = buildOverviewListHtml(
+      state.companies.slice(0, 5).map((company) => ({
+        title: company.name,
+        meta: `${company.active_users || 0} usuário(s) ativo(s) • ${formatModuleList(company.modules)}`,
+        tone: company.status === 'active' ? 'success' : 'warning'
+      })),
+      'Nenhum cliente SaaS cadastrado ainda.'
+    );
+    inicioTrucksList.innerHTML = buildOverviewListHtml([], 'Visão operacional indisponível para o usuário master.');
+    inicioAlertsList.innerHTML = buildOverviewListHtml(
+      activeCompanies.slice(0, 4).map((company) => ({
+        title: `${company.name} com ${company.active_users || 0} usuário(s) ativo(s)`,
+        meta: company.status === 'active' ? 'Cliente ativo na plataforma' : 'Cliente inativo',
+        tone: company.status === 'active' ? 'success' : 'warning'
+      })),
+      'Sem alertas da plataforma.'
+    );
+    inicioCapacityList.innerHTML = buildOverviewListHtml(
+      state.companies.slice(0, 4).map((company) => ({
+        title: company.name,
+        meta: `${company.modules.length} módulo(s): ${formatModuleList(company.modules)}`,
+        tone: 'neutral'
+      })),
+      'Nenhum módulo contratado ainda.'
+    );
+    inicioChartsGrid.innerHTML = '';
+    return;
+  }
+
   const todayIso = getTodayDateIso();
   const openOrders = state.orders.filter((order) => order.status === 'open');
   const completedOrders = state.orders.filter((order) => order.status === 'completed');
@@ -505,7 +951,7 @@ function renderHomeOverview() {
     { label: 'Entregas concluídas', value: completedOrders.length, detail: 'Pedidos finalizados no sistema', tone: 'neutral' },
     { label: 'Pedidos em aberto', value: openOrders.length, detail: 'Demandas aguardando conclusão', tone: 'warning' },
     { label: 'Caminhões disponíveis hoje', value: `${availableTodayCount}/${totalTruckUnits}`, detail: `Unidades livres em ${formatDate(todayIso)}`, tone: 'success' },
-    { label: 'Latas cadastradas', value: state.cans.length, detail: 'Modelos ativos para simulação', tone: 'neutral' },
+    { label: 'Produtos cadastrados', value: state.cans.length, detail: 'Modelos ativos para simulação', tone: 'neutral' },
     { label: 'Modelos de caminhão', value: state.trucks.length, detail: `${totalTruckUnits} unidade(s) cadastrada(s)`, tone: 'neutral' },
     { label: state.user?.role === 'admin' ? 'Usuários ativos' : 'Pedidos para hoje', value: state.user?.role === 'admin' ? state.users.length : ordersToday.length, detail: state.user?.role === 'admin' ? 'Contas cadastradas no sistema' : 'Entregas programadas para hoje', tone: 'accent' }
   ];
@@ -567,7 +1013,7 @@ function renderHomeOverview() {
 
   const capacityItems = [
     { title: `${totalCapacityLiters.toFixed(2)} L`, meta: 'Capacidade total de transporte cadastrada', tone: 'accent' },
-    { title: `${state.cans.length} formatos`, meta: 'Tipos de latas/baldes disponíveis', tone: 'neutral' },
+    { title: `${state.cans.length} formatos`, meta: 'Tipos de produtos disponiveis', tone: 'neutral' },
     { title: `${totalTruckUnits} veículos`, meta: 'Unidades totais da frota configurada', tone: 'neutral' }
   ];
 
@@ -664,14 +1110,14 @@ function renderGeneralCharts() {
       </header>
       <div class="shape-metrics">
         <div class="shape-metric-row">
-          <span>Latas quadradas</span>
+          <span>Produtos retangulares</span>
           <strong>${canSquareCount} (${squarePct.toFixed(0)}%)</strong>
         </div>
         <div class="shape-progress">
           <span style="width: ${squarePct.toFixed(2)}%"></span>
         </div>
         <div class="shape-metric-row">
-          <span>Baldes cilíndricos</span>
+          <span>Produtos cilindricos</span>
           <strong>${canCylinderCount} (${cylinderPct.toFixed(0)}%)</strong>
         </div>
         <div class="shape-progress shape-progress-dark">
@@ -790,7 +1236,7 @@ function renderCans() {
     canSelect.appendChild(option);
   }
   
-  // Popular select de categorias no formulário de latas
+  // Popular select de categorias no formulario de produtos
   const categorySelect = document.getElementById('category-select');
   if (categorySelect) {
     categorySelect.innerHTML = '<option value="">Sem categoria</option>';
@@ -817,8 +1263,8 @@ function renderCans() {
   if (cansFilterCount) {
     const total = state.cans.length;
     cansFilterCount.textContent = filteredCans.length === total
-      ? `${filteredCans.length} lata(s)`
-      : `${filteredCans.length} de ${total} lata(s)`;
+      ? `${filteredCans.length} produto(s)`
+      : `${filteredCans.length} de ${total} produto(s)`;
   }
   
   const hasSelection = filteredCans.some((can) => can.id === state.selectedCanId);
@@ -830,7 +1276,7 @@ function renderCans() {
   }
 
   if (!filteredCans.length) {
-    cansBody.innerHTML = '<tr><td colspan="4" class="text-center">Nenhuma lata encontrada com os filtros atuais.</td></tr>';
+    cansBody.innerHTML = '<tr><td colspan="4" class="text-center">Nenhum produto encontrado com os filtros atuais.</td></tr>';
   }
 
   for (const can of filteredCans) {
@@ -842,7 +1288,7 @@ function renderCans() {
     tr.innerHTML = `
       <td>${escapeHtml(can.name)}</td>
       <td>${escapeHtml(can.category_name || 'Sem categoria')}</td>
-      <td>${can.shape === 'square' ? 'Quadrada' : 'Cilíndrica'}</td>
+      <td>${can.shape === 'square' ? 'Retangular' : 'Cilindrico'}</td>
       <td>${formatVolume(can.volume_cm3)}</td>
     `;
     tr.addEventListener('click', () => {
@@ -921,18 +1367,23 @@ function renderTrucks() {
 }
 
 function renderCategories() {
-  categoriesBody.innerHTML = '';
-  if (state.user?.role !== 'admin') return;
+  const categoryTargets = [categoriesBody, categoriesOperationalBody].filter(Boolean);
+  categoryTargets.forEach((target) => {
+    target.innerHTML = '';
+  });
+  if (!canManageOperationalData()) return;
 
   for (const category of state.categories) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${escapeHtml(category.name)}</td>
-      <td>
-        <button class="row-action danger" onclick="onDeleteCategory(${category.id}, '${escapeHtml(category.name)}')">Excluir</button>
-      </td>
-    `;
-    categoriesBody.appendChild(tr);
+    for (const target of categoryTargets) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml(category.name)}</td>
+        <td>
+          <button class="row-action danger" onclick="onDeleteCategory(${category.id}, '${escapeHtml(category.name)}')">Excluir</button>
+        </td>
+      `;
+      target.appendChild(tr);
+    }
   }
 }
 
@@ -1013,7 +1464,7 @@ function renderClients() {
       <td>
         <div class="client-actions">
           <button class="btn btn-view" onclick="onViewClient(${client.id})">👁️</button>
-          <button class="btn btn-edit" onclick="onEditClient(${client.id})">✏️</button>
+          <button class="btn btn-edit" onclick="openClientEditModal(${client.id})">✏️</button>
           <button class="btn btn-delete" onclick="onDeleteClient(${client.id}, '${escapeHtml(client.name)}')">🗑️</button>
         </div>
       </td>
@@ -1091,7 +1542,9 @@ function renderUsers() {
     tr.innerHTML = `
       <td>${escapeHtml(user.name)}</td>
       <td>${escapeHtml(user.email)}</td>
-      <td>${user.role}</td>
+      <td>${escapeHtml(user.role === 'admin' ? 'admin' : 'user')}</td>
+      <td>${user.is_active ? 'Ativo' : 'Inativo'}</td>
+      <td>${escapeHtml(formatModuleList(user.modules))}</td>
     `;
     tr.addEventListener('click', () => {
       state.selectedUserId = user.id;
@@ -1100,6 +1553,118 @@ function renderUsers() {
     });
     usersBody.appendChild(tr);
   }
+}
+
+function renderCompanies() {
+  if (!companiesGrid) return;
+  companiesGrid.innerHTML = '';
+  if (!isPlatformAdmin()) return;
+
+  if (!state.companies.length) {
+    companiesGrid.innerHTML = `
+      <article class="company-empty-state">
+        <strong>Nenhum cliente SaaS cadastrado.</strong>
+        <span>Use o formulário ao lado para iniciar a base de clientes da plataforma.</span>
+      </article>
+    `;
+    return;
+  }
+
+  companiesGrid.innerHTML = state.companies.map((company) => `
+    <article class="company-card ${company.status === 'active' ? 'company-card-active' : 'company-card-inactive'}">
+      <div class="company-card-top">
+        <div>
+          <span class="company-card-label">Empresa</span>
+          <h4>${escapeHtml(company.name)}</h4>
+        </div>
+        <span class="company-status-badge ${company.status === 'active' ? 'company-status-badge-active' : 'company-status-badge-inactive'}">
+          ${company.status === 'active' ? 'Ativa' : 'Inativa'}
+        </span>
+      </div>
+      <div class="company-card-stats">
+        <div class="company-stat">
+          <strong>${escapeHtml(String(company.active_users || 0))}</strong>
+          <span>Usuários ativos</span>
+        </div>
+        <div class="company-stat">
+          <strong>${escapeHtml(String(company.total_users || 0))}</strong>
+          <span>Usuários totais</span>
+        </div>
+      </div>
+      <div class="company-card-module">
+        <span class="company-card-label">Módulo liberado</span>
+        <strong>${escapeHtml(formatModuleList(company.modules))}</strong>
+      </div>
+    </article>
+  `).join('');
+}
+
+function renderCompanies() {
+  if (!companiesGrid) return;
+  companiesGrid.innerHTML = '';
+  if (!isPlatformAdmin()) return;
+
+  if (!state.companies.length) {
+    companiesGrid.innerHTML = `
+      <article class="company-empty-state">
+        <strong>Nenhum cliente SaaS cadastrado.</strong>
+        <span>Abra a aba de onboarding para cadastrar a primeira empresa da plataforma.</span>
+      </article>
+    `;
+    return;
+  }
+
+  companiesGrid.innerHTML = state.companies.map((company) => `
+    <article class="company-card ${company.status === 'active' ? 'company-card-active' : 'company-card-inactive'}">
+      <div class="company-card-top">
+        <div>
+          <span class="company-card-label">Empresa</span>
+          <h4>${escapeHtml(company.name)}</h4>
+          <p class="company-card-subtitle">${escapeHtml(company.admin?.name || 'Sem admin principal')}</p>
+        </div>
+        <span class="company-status-badge ${company.status === 'active' ? 'company-status-badge-active' : 'company-status-badge-inactive'}">
+          ${company.status === 'active' ? 'Ativa' : 'Inativa'}
+        </span>
+      </div>
+      <div class="company-card-stats">
+        <div class="company-stat">
+          <strong>${escapeHtml(String(company.active_users || 0))}</strong>
+          <span>Usuarios ativos</span>
+        </div>
+        <div class="company-stat">
+          <strong>${escapeHtml(String(company.total_users || 0))}</strong>
+          <span>Usuarios totais</span>
+        </div>
+      </div>
+      <div class="company-card-meta">
+        <div>
+          <span class="company-card-label">Pagamento</span>
+          <strong>${escapeHtml(formatPaymentStatus(company.payment_status))}</strong>
+        </div>
+        <div>
+          <span class="company-card-label">Mensalidade</span>
+          <strong>${escapeHtml(formatCurrency(company.billing_amount || 0))}</strong>
+        </div>
+      </div>
+      <div class="company-card-module">
+        <span class="company-card-label">Modulo contratado</span>
+        <strong>${escapeHtml(formatCompanyModuleScope(company.modules))}</strong>
+      </div>
+      <div class="company-card-footer">
+        <span>${company.billing_due_day ? `Vence dia ${escapeHtml(String(company.billing_due_day))}` : 'Vencimento nao definido'}</span>
+        <button type="button" class="btn btn-primary company-manage-btn" data-company-id="${company.id}">Gerenciar cliente</button>
+      </div>
+    </article>
+  `).join('');
+
+  companiesGrid.querySelectorAll('.company-manage-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const companyId = Number(button.dataset.companyId);
+      if (Number.isInteger(companyId)) {
+        openCompanyModal(companyId);
+      }
+    });
+  });
 }
 
 function renderOrders() {
@@ -1142,7 +1707,7 @@ function renderOrders() {
       <td>${order.total_cans}</td>
       <td>${formatVolume(order.total_volume_cm3)}</td>
       <td><span class="status-badge ${order.status === 'completed' ? 'status-completed' : 'status-open'}">${order.status === 'completed' ? 'Concluído' : 'Aberto'}</span></td>
-      <td>${state.user?.role === 'admin' ? '<button class="row-action view-order-btn" type="button">Ver</button>' : '-'}</td>
+      <td><button class="row-action view-order-btn" type="button">Ver</button></td>
     `;
 
     tr.addEventListener('click', () => {
@@ -1724,6 +2289,14 @@ async function onLaunchOrder() {
 
   closeEntityModal();
   closeConfirmModal();
+  if (isEditing) {
+    onCloseClientModal();
+    showToast('Cliente atualizado com sucesso!');
+    await loadData();
+    renderApp();
+    return;
+  }
+
   onCloseClientModal();
   state.cargoItems = [];
   state.lastCalculation = null;
@@ -1886,7 +2459,7 @@ async function openOrderModal(orderId) {
           return `
             <tr>
               <td>${escapeHtml(item.can_name)}</td>
-              <td>${item.can_shape === 'square' ? 'Quadrada' : 'Cilíndrica'}</td>
+              <td>${item.can_shape === 'square' ? 'Retangular' : 'Cilindrico'}</td>
               <td>${item.quantity}</td>
               <td>${formatVolume(item.unit_volume_cm3)}</td>
               <td>${formatVolume(item.total_volume_cm3)}</td>
@@ -1901,7 +2474,7 @@ async function openOrderModal(orderId) {
         </tr>
         <tr class="client-group-subheader">
           <td><em>Resumo do cliente:</em></td>
-          <td colspan="2"><em>${clientGroup.totalCans} latas</em></td>
+          <td colspan="2"><em>${clientGroup.totalCans} produto(s)</em></td>
           <td colspan="2"><em>${formatVolume(clientGroup.totalVolumeCm3)}</em></td>
         </tr>
         ${clientRows}
@@ -1928,7 +2501,7 @@ async function openOrderModal(orderId) {
       <div class="modal-actions">
         <button type="button" id="modal-view-order-3d-btn" class="btn btn-secondary">Mostrar 3D do pedido</button>
         ${order.status === 'open' && canManage ? '<button type="button" id="modal-edit-order-btn" class="btn btn-primary">Editar pedido</button>' : ''}
-        ${order.status === 'open' && state.user?.role === 'admin' ? '<button type="button" id="modal-conclude-order-btn" class="btn btn-primary">Concluir pedido</button>' : ''}
+        ${order.status === 'open' && canManage ? '<button type="button" id="modal-conclude-order-btn" class="btn btn-primary">Concluir pedido</button>' : ''}
         ${canManage ? '<button type="button" id="modal-delete-order-btn" class="row-action danger">Excluir pedido</button>' : ''}
       </div>
     `
@@ -1943,7 +2516,7 @@ async function openOrderModal(orderId) {
     <p><strong>Solicitante:</strong> ${escapeHtml(order.created_by_name)}</p>
     <p><strong>Período do pedido:</strong> ${escapeHtml(formatOrderRange(order))}</p>
     <p><strong>Criado em:</strong> ${escapeHtml(formatDateTime(order.created_at))}</p>
-    <p><strong>Total de latas:</strong> ${order.total_cans}</p>
+    <p><strong>Total de produtos:</strong> ${order.total_cans}</p>
     <p><strong>Volume total:</strong> ${formatVolume(order.total_volume_cm3)}</p>
     <p><strong>Caminhões reservados:</strong></p>
     ${trucksHtml}
@@ -1962,7 +2535,7 @@ async function openOrderModal(orderId) {
     <table>
       <thead>
         <tr>
-          <th>Lata</th>
+          <th>Produto</th>
           <th>Formato</th>
           <th>Qtd</th>
           <th>Volume unit.</th>
@@ -2117,7 +2690,7 @@ function openOrderEditModal(order, items) {
       clientLabel.appendChild(clientInput);
 
       const canLabel = document.createElement('label');
-      canLabel.textContent = 'Lata';
+      canLabel.textContent = 'Produto';
       const canSelect = document.createElement('select');
       state.cans.forEach((can) => {
         const option = document.createElement('option');
@@ -2211,21 +2784,192 @@ function openOrderEditModal(order, items) {
   });
 }
 
+function onOpenCategoryModal() {
+  if (!canManageOperationalData()) return;
+
+  state.modal = { type: 'category-create' };
+  entityModalTitle.textContent = 'Nova categoria';
+  entityModalContent.innerHTML = `
+    <form id="modal-category-form" class="grid-form">
+      <label>Nome da categoria
+        <input name="name" required />
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Salvar categoria</button>
+      </div>
+    </form>
+  `;
+  entityModalOverlay.classList.remove('hidden');
+
+  const form = document.getElementById('modal-category-form');
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const response = await api('/api/can-categories', {
+      method: 'POST',
+      body: {
+        name: String(formData.get('name') || '').trim()
+      }
+    });
+
+    if (!response.ok) {
+      showToast(response.data.error || 'Nao foi possivel cadastrar a categoria.');
+      return;
+    }
+
+    closeEntityModal();
+    await loadData();
+    renderApp();
+    showToast('Categoria cadastrada.');
+  });
+}
+
+function onOpenCanCreateModal() {
+  if (!canManageOperationalData()) return;
+
+  state.modal = { type: 'can-create' };
+  entityModalTitle.textContent = 'Novo produto';
+  entityModalContent.innerHTML = `
+    <form id="modal-can-create-form" class="grid-form">
+      <label>Nome
+        <input name="name" required />
+      </label>
+      <label>Categoria
+        <select name="categoryId">
+          <option value="">Sem categoria</option>
+          ${state.categories
+            .map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`)
+            .join('')}
+        </select>
+      </label>
+      <label>Formato
+        <select name="shape" id="modal-can-create-shape">
+          <option value="square">Produto Retangular</option>
+          <option value="cylinder">Produto Cilindrico</option>
+        </select>
+      </label>
+      <label>Altura (cm)
+        <input name="heightCm" type="number" min="0.1" step="0.1" required />
+      </label>
+      <label class="modal-shape-square">Lado 1 (cm)
+        <input name="side1Cm" type="number" min="0.1" step="0.1" />
+      </label>
+      <label class="modal-shape-square">Lado 2 (cm)
+        <input name="side2Cm" type="number" min="0.1" step="0.1" />
+      </label>
+      <label class="modal-shape-cylinder hidden">Circunferencia (cm)
+        <input name="circumferenceCm" type="number" min="0.1" step="0.1" />
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Cadastrar produto</button>
+      </div>
+    </form>
+  `;
+  entityModalOverlay.classList.remove('hidden');
+
+  const form = document.getElementById('modal-can-create-form');
+  const shapeInput = document.getElementById('modal-can-create-shape');
+  syncModalCanShapeFields(shapeInput.value);
+  shapeInput.addEventListener('change', () => syncModalCanShapeFields(shapeInput.value));
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const response = await api('/api/cans', {
+      method: 'POST',
+      body: {
+        name: String(formData.get('name') || '').trim(),
+        categoryId: formData.get('categoryId') ? Number(formData.get('categoryId')) : null,
+        shape: String(formData.get('shape') || ''),
+        heightCm: Number(formData.get('heightCm')),
+        side1Cm: Number(formData.get('side1Cm')),
+        side2Cm: Number(formData.get('side2Cm')),
+        circumferenceCm: Number(formData.get('circumferenceCm'))
+      }
+    });
+
+    if (!response.ok) {
+      showToast(response.data.error || 'Nao foi possivel cadastrar o produto.');
+      return;
+    }
+
+    closeEntityModal();
+    await loadData();
+    renderApp();
+    showToast('Produto cadastrado.');
+  });
+}
+
+function onOpenTruckCreateModal() {
+  if (!canManageOperationalData()) return;
+
+  state.modal = { type: 'truck-create' };
+  entityModalTitle.textContent = 'Novo caminhão';
+  entityModalContent.innerHTML = `
+    <form id="modal-truck-create-form" class="grid-form">
+      <label>Nome
+        <input name="name" required />
+      </label>
+      <label>Comprimento interno (cm)
+        <input name="lengthCm" type="number" min="0.1" step="0.1" required />
+      </label>
+      <label>Largura interna (cm)
+        <input name="widthCm" type="number" min="0.1" step="0.1" required />
+      </label>
+      <label>Altura interna (cm)
+        <input name="heightCm" type="number" min="0.1" step="0.1" required />
+      </label>
+      <label>Quantidade
+        <input name="quantity" type="number" min="1" step="1" value="1" required />
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Cadastrar caminhão</button>
+      </div>
+    </form>
+  `;
+  entityModalOverlay.classList.remove('hidden');
+
+  const form = document.getElementById('modal-truck-create-form');
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const response = await api('/api/trucks', {
+      method: 'POST',
+      body: {
+        name: String(formData.get('name') || '').trim(),
+        lengthCm: Number(formData.get('lengthCm')),
+        widthCm: Number(formData.get('widthCm')),
+        heightCm: Number(formData.get('heightCm')),
+        quantity: Number(formData.get('quantity'))
+      }
+    });
+
+    if (!response.ok) {
+      showToast(response.data.error || 'Nao foi possivel cadastrar o caminhão.');
+      return;
+    }
+
+    closeEntityModal();
+    await loadData();
+    renderApp();
+    showToast('Caminhão cadastrado.');
+  });
+}
+
 function openCanModal(canId) {
   const can = state.cans.find((entry) => entry.id === canId);
   if (!can) {
-    showToast('Lata não encontrada.');
+    showToast('Produto nao encontrado.');
     return;
   }
 
   state.modal = { type: 'can', id: can.id };
-  entityModalTitle.textContent = 'Detalhes da lata';
-  const isAdmin = state.user?.role === 'admin';
+  entityModalTitle.textContent = 'Detalhes do produto';
+  const canManage = canManageOperationalData();
 
-  if (!isAdmin) {
+  if (!canManage) {
     entityModalContent.innerHTML = `
       <p><strong>Nome:</strong> ${escapeHtml(can.name)}</p>
-      <p><strong>Formato:</strong> ${can.shape === 'square' ? 'Lata Quadrada' : 'Balde Cilindrico'}</p>
+      <p><strong>Formato:</strong> ${can.shape === 'square' ? 'Produto Retangular' : 'Produto Cil?ndrico'}</p>
       <p><strong>Volume:</strong> ${formatVolume(can.volume_cm3)}</p>
       <p><strong>Dimensões:</strong> ${escapeHtml(formatCanDimensions(can))}</p>
       <p><strong>Cadastrada em:</strong> ${escapeHtml(String(can.created_at || '-'))}</p>
@@ -2252,8 +2996,8 @@ function openCanModal(canId) {
       </label>
       <label>Formato
         <select name="shape" id="modal-can-shape">
-          <option value="square" ${can.shape === 'square' ? 'selected' : ''}>Lata Quadrada</option>
-          <option value="cylinder" ${can.shape === 'cylinder' ? 'selected' : ''}>Balde Cilindrico</option>
+          <option value="square" ${can.shape === 'square' ? 'selected' : ''}>Produto Retangular</option>
+          <option value="cylinder" ${can.shape === 'cylinder' ? 'selected' : ''}>Produto Cil?ndrico</option>
         </select>
       </label>
       <label>Altura (cm)
@@ -2270,7 +3014,7 @@ function openCanModal(canId) {
       </label>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">Salvar alterações</button>
-        <button type="button" id="modal-delete-can-btn" class="row-action danger">Excluir lata</button>
+        <button type="button" id="modal-delete-can-btn" class="row-action danger">Excluir produto</button>
       </div>
     </form>
   `;
@@ -2296,24 +3040,24 @@ function openCanModal(canId) {
 
     const response = await api(`/api/cans/${can.id}`, { method: 'PUT', body: payload });
     if (!response.ok) {
-      showToast(response.data.error || 'Não foi possível atualizar a lata.');
+      showToast('Nao foi possivel atualizar o produto.');
       return;
     }
 
-    showToast('Lata atualizada.');
+    showToast('Produto atualizado.');
     closeEntityModal();
     await loadData();
     renderApp();
   });
 
   deleteBtn.addEventListener('click', async () => {
-    if (!window.confirm(`Excluir a lata "${can.name}"?`)) return;
+    if (!window.confirm(`Excluir o produto "${can.name}"?`)) return;
     const response = await api(`/api/cans/${can.id}`, { method: 'DELETE' });
     if (!response.ok) {
-      showToast(response.data.error || 'Não foi possível excluir a lata.');
+      showToast('Nao foi possivel excluir o produto.');
       return;
     }
-    showToast('Lata excluída.');
+    showToast('Produto excluido.');
     closeEntityModal();
     await loadData();
     renderApp();
@@ -2329,10 +3073,10 @@ function openTruckModal(truckId) {
 
   state.modal = { type: 'truck', id: truck.id };
   entityModalTitle.textContent = 'Detalhes do caminhão';
-  const isAdmin = state.user?.role === 'admin';
+  const canManage = canManageOperationalData();
   const availability = getTruckAvailabilityInfo(truck.id);
 
-  if (!isAdmin) {
+  if (!canManage) {
     entityModalContent.innerHTML = `
       <p><strong>Nome:</strong> ${escapeHtml(truck.name)}</p>
       <p><strong>Dimensões internas:</strong> ${truck.length_cm} x ${truck.width_cm} x ${truck.height_cm} cm</p>
@@ -2406,6 +3150,108 @@ function openTruckModal(truckId) {
   });
 }
 
+function openCompanyModal(companyId) {
+  const company = state.companies.find((entry) => entry.id === companyId);
+  if (!company) return;
+
+  state.selectedCompanyId = companyId;
+  state.modal = { type: 'company', id: companyId };
+  entityModalTitle.textContent = `Cliente SaaS: ${company.name}`;
+  entityModalContent.innerHTML = `
+    <form id="modal-company-form" class="grid-form">
+      <label>Empresa
+        <input name="name" required value="${escapeHtml(company.name)}" />
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="active" ${company.status === 'active' ? 'selected' : ''}>Ativa</option>
+          <option value="inactive" ${company.status === 'inactive' ? 'selected' : ''}>Inativa</option>
+        </select>
+      </label>
+      <label>Contato principal
+        <input name="contactName" value="${escapeHtml(company.contact_name || '')}" />
+      </label>
+      <label>Email comercial
+        <input name="contactEmail" type="email" value="${escapeHtml(company.contact_email || '')}" />
+      </label>
+      <label>Telefone
+        <input name="contactPhone" value="${escapeHtml(company.contact_phone || '')}" />
+      </label>
+      <label>CNPJ/Documento
+        <input name="document" value="${escapeHtml(company.document || '')}" />
+      </label>
+      <label>Admin principal
+        <input name="adminName" required value="${escapeHtml(company.admin?.name || '')}" />
+      </label>
+      <label>Email do admin
+        <input name="adminEmail" type="email" required value="${escapeHtml(company.admin?.email || '')}" />
+      </label>
+      <label>Mensalidade
+        <input name="billingAmount" type="number" min="0" step="0.01" value="${escapeHtml(String(company.billing_amount || 0))}" />
+      </label>
+      <label>Vencimento
+        <input name="billingDueDay" type="number" min="1" max="31" value="${escapeHtml(company.billing_due_day ? String(company.billing_due_day) : '')}" />
+      </label>
+      <label>Status do pagamento
+        <select name="paymentStatus">
+          <option value="pending" ${company.payment_status === 'pending' ? 'selected' : ''}>Pendente</option>
+          <option value="paid" ${company.payment_status === 'paid' ? 'selected' : ''}>Pago</option>
+          <option value="overdue" ${company.payment_status === 'overdue' ? 'selected' : ''}>Em atraso</option>
+        </select>
+      </label>
+      <label>Ultimo pagamento
+        <input name="lastPaymentDate" type="date" value="${escapeHtml(company.last_payment_date || '')}" />
+      </label>
+      <label>Observacoes
+        <textarea name="notes" rows="4" placeholder="Resumo contratual, observacoes internas ou pendencias">${escapeHtml(company.notes || '')}</textarea>
+      </label>
+      <fieldset class="module-fieldset">
+        <legend>Modulo contratado</legend>
+        <p class="hint">Este modulo unico libera Dashboard, Operacoes, Clientes, Produtos e Caminhoes.</p>
+        <div id="modal-company-modules" class="module-grid">${buildModuleCheckboxes(company.modules)}</div>
+      </fieldset>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Salvar alteracoes</button>
+      </div>
+    </form>
+  `;
+
+  entityModalOverlay.classList.remove('hidden');
+  const form = document.getElementById('modal-company-form');
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const payload = {
+      name: formData.get('name'),
+      status: formData.get('status'),
+      contactName: formData.get('contactName'),
+      contactEmail: formData.get('contactEmail'),
+      contactPhone: formData.get('contactPhone'),
+      document: formData.get('document'),
+      adminName: formData.get('adminName'),
+      adminEmail: formData.get('adminEmail'),
+      billingAmount: Number(formData.get('billingAmount') || 0),
+      billingDueDay: formData.get('billingDueDay'),
+      paymentStatus: formData.get('paymentStatus'),
+      lastPaymentDate: formData.get('lastPaymentDate'),
+      notes: formData.get('notes'),
+      modules: formData.getAll('modules').map((value) => String(value))
+    };
+
+    const response = await api(`/api/platform/companies/${companyId}`, { method: 'PUT', body: payload });
+    if (!response.ok) {
+      showToast(response.data.error || 'Nao foi possivel atualizar o cliente SaaS.');
+      return;
+    }
+
+    await loadData();
+    renderCompanies();
+    renderHomeOverview();
+    closeEntityModal();
+    showToast('Cliente SaaS atualizado.');
+  });
+}
+
 function openUserModal(userId) {
   const user = state.users.find((entry) => entry.id === userId);
   if (!user) {
@@ -2425,14 +3271,26 @@ function openUserModal(userId) {
         <input name="email" type="email" value="${escapeHtml(user.email)}" required />
       </label>
       <label>Perfil
-        <select name="role">
+        <select name="role" ${isPlatformAdmin() ? '' : 'disabled'}>
           <option value="user" ${user.role === 'user' ? 'selected' : ''}>Usuário</option>
-          <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Administrador</option>
+          ${isPlatformAdmin() ? `<option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Administrador</option>` : ''}
+        </select>
+      </label>
+      <label>Status
+        <select name="isActive">
+          <option value="true" ${user.is_active ? 'selected' : ''}>Ativo</option>
+          <option value="false" ${!user.is_active ? 'selected' : ''}>Inativo</option>
         </select>
       </label>
       <label>Nova senha (opcional)
         <input name="password" type="password" />
       </label>
+      <fieldset class="module-fieldset">
+        <legend>Módulos liberados</legend>
+        <div id="modal-user-modules" class="module-grid">
+          ${buildModuleCheckboxes(isPlatformAdmin() ? user.modules : (state.user?.companyModules || ['loading3d']), !isPlatformAdmin() || user.role === 'admin')}
+        </div>
+      </fieldset>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">Salvar alterações</button>
         <button type="button" id="modal-delete-user-btn" class="row-action danger">Excluir usuário</button>
@@ -2443,13 +3301,29 @@ function openUserModal(userId) {
   entityModalOverlay.classList.remove('hidden');
   const form = document.getElementById('modal-user-form');
   const deleteBtn = document.getElementById('modal-delete-user-btn');
+  const roleSelect = form.querySelector('select[name="role"]');
+  const modulesContainer = document.getElementById('modal-user-modules');
+  const syncModules = () => {
+    const selectedModules = Array.from(modulesContainer.querySelectorAll('input[name="modules"]:checked'))
+      .map((input) => input.value);
+    const isAdminRole = isPlatformAdmin() && roleSelect.value === 'admin';
+    modulesContainer.innerHTML = buildModuleCheckboxes(
+      isAdminRole
+        ? getAvailableModules().map((module) => module.key)
+        : (isPlatformAdmin() ? selectedModules : (state.user?.companyModules || ['loading3d'])),
+      !isPlatformAdmin() || isAdminRole
+    );
+  };
+  roleSelect.addEventListener('change', syncModules);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const formData = new FormData(form);
     const payload = {
       name: String(formData.get('name') || '').trim(),
       email: String(formData.get('email') || '').trim(),
-      role: String(formData.get('role') || 'user')
+      role: isPlatformAdmin() ? String(formData.get('role') || 'user') : 'user',
+      isActive: String(formData.get('isActive') || 'true') === 'true',
+      modules: formData.getAll('modules').map((value) => String(value))
     };
     const password = String(formData.get('password') || '').trim();
     if (password) payload.password = password;
@@ -2570,6 +3444,47 @@ async function onCreateCategory(event) {
   renderApp();
 }
 
+async function onCreateCompany(event) {
+  event.preventDefault();
+  if (state.companyWizardStep < 3) {
+    onAdvanceCompanyWizard();
+    return;
+  }
+  const form = new FormData(companyForm);
+  const payload = {
+    name: form.get('name'),
+    status: form.get('status'),
+    contactName: form.get('contactName'),
+    contactEmail: form.get('contactEmail'),
+    contactPhone: form.get('contactPhone'),
+    document: form.get('document'),
+    adminName: form.get('adminName'),
+    adminEmail: form.get('adminEmail'),
+    adminPassword: form.get('adminPassword'),
+    billingAmount: Number(form.get('billingAmount') || 0),
+    billingDueDay: form.get('billingDueDay'),
+    paymentStatus: form.get('paymentStatus'),
+    lastPaymentDate: form.get('lastPaymentDate'),
+    notes: form.get('notes'),
+    modules: form.getAll('modules').map((value) => String(value))
+  };
+
+  const response = await api('/api/platform/companies', { method: 'POST', body: payload });
+  if (!response.ok) {
+    showToast(response.data.error || 'Nao foi possivel cadastrar o cliente SaaS.');
+    return;
+  }
+
+  companyForm.reset();
+  syncCompanyFormAccess();
+  setCompanyWizardStep(1);
+  setPlatformSection('portfolio');
+  await loadData();
+  renderCompanies();
+  renderHomeOverview();
+  showToast('Cliente SaaS cadastrado.');
+}
+
 async function onCreateUser(event) {
   event.preventDefault();
   const form = new FormData(userForm);
@@ -2577,7 +3492,9 @@ async function onCreateUser(event) {
     name: form.get('name'),
     email: form.get('email'),
     password: form.get('password'),
-    role: form.get('role')
+    role: form.get('role'),
+    isActive: String(form.get('isActive') || 'true') === 'true',
+    modules: form.getAll('modules').map((value) => String(value))
   };
 
   const response = await api('/api/users', { method: 'POST', body: payload });
@@ -2587,6 +3504,7 @@ async function onCreateUser(event) {
   }
 
   userForm.reset();
+  syncUserFormAccess();
   await loadData();
   renderUsers();
   showToast('Usuário cadastrado.');
@@ -2606,7 +3524,7 @@ async function onCreateCan(event) {
 
   const response = await api('/api/cans', { method: 'POST', body: payload });
   if (!response.ok) {
-    showToast(response.data.error || 'Não foi possível cadastrar lata.');
+    showToast('Nao foi possivel cadastrar produto.');
     return;
   }
 
@@ -2614,7 +3532,7 @@ async function onCreateCan(event) {
   syncCanShapeFields();
   await loadData();
   renderApp();
-  showToast('Lata cadastrada.');
+  showToast('Produto cadastrado.');
 }
 
 async function onCreateTruck(event) {
@@ -2785,33 +3703,93 @@ function onBackToItems() {
 function onOpenClientModal() {
   clientModalTitle.textContent = 'Cadastrar Novo Cliente';
   clientModalForm.reset();
+  delete clientModalForm.dataset.clientId;
+  clientModalForm.dataset.mode = 'create';
   clientModalOverlay.classList.remove('hidden');
 }
 
 function onCloseClientModal() {
   clientModalOverlay.classList.add('hidden');
   clientModalForm.reset();
+  delete clientModalForm.dataset.clientId;
+  clientModalForm.dataset.mode = 'create';
+}
+
+function fillClientForm(formElement, client = null) {
+  formElement.elements.namedItem('name').value = client?.name || '';
+  formElement.elements.namedItem('email').value = client?.email || '';
+  formElement.elements.namedItem('phone').value = client?.phone || '';
+  formElement.elements.namedItem('address').value = client?.address || '';
+  formElement.elements.namedItem('city').value = client?.city || '';
+  formElement.elements.namedItem('state').value = client?.state || '';
+  formElement.elements.namedItem('cnpj_cpf').value = client?.cnpj_cpf || '';
+  formElement.elements.namedItem('contact_person').value = client?.contact_person || '';
+  formElement.elements.namedItem('status').value = client?.status || 'active';
+  formElement.elements.namedItem('notes').value = client?.notes || '';
+}
+
+function openClientEditModal(clientId) {
+  const client = state.clients.find((entry) => entry.id === clientId);
+  if (!client) {
+    showToast('Cliente nao encontrado.');
+    return;
+  }
+
+  clientModalTitle.textContent = 'Editar Cliente';
+  clientModalForm.reset();
+  fillClientForm(clientModalForm, client);
+  clientModalForm.dataset.mode = 'edit';
+  clientModalForm.dataset.clientId = String(client.id);
+  clientModalOverlay.classList.remove('hidden');
+}
+
+function buildClientPayloadFromForm(formData) {
+  return {
+    name: formData.get('name'),
+    email: formData.get('email'),
+    phone: formData.get('phone'),
+    address: formData.get('address'),
+    city: formData.get('city'),
+    state: formData.get('state'),
+    cnpj_cpf: formData.get('cnpj_cpf'),
+    contact_person: formData.get('contact_person'),
+    status: formData.get('status'),
+    notes: formData.get('notes')
+  };
+}
+
+async function createOperationalClientFromForm(formElement) {
+  const formData = new FormData(formElement);
+  return api('/api/clients', {
+    method: 'POST',
+    body: buildClientPayloadFromForm(formData)
+  });
+}
+
+async function onCreateOperationalClient(event) {
+  event.preventDefault();
+
+  const response = await createOperationalClientFromForm(clientForm);
+  if (!response.ok) {
+    showToast(response.data.error || 'Nao foi possivel cadastrar o cliente.');
+    return;
+  }
+
+  clientForm.reset();
+  await loadData();
+  renderClients();
+  showToast('Cliente operacional cadastrado.');
 }
 
 async function onSaveClient(event) {
   event.preventDefault();
-  
-  const form = new FormData(clientModalForm);
-  const payload = {
-    name: form.get('name'),
-    email: form.get('email'),
-    phone: form.get('phone'),
-    address: form.get('address'),
-    city: form.get('city'),
-    state: form.get('state'),
-    cnpj_cpf: form.get('cnpj_cpf'),
-    contact_person: form.get('contact_person'),
-    status: form.get('status'),
-    notes: form.get('notes')
-  };
 
-  const response = await api('/api/clients', {
-    method: 'POST',
+  const formData = new FormData(clientModalForm);
+  const payload = buildClientPayloadFromForm(formData);
+  const clientId = Number(clientModalForm.dataset.clientId || 0);
+  const isEditing = clientModalForm.dataset.mode === 'edit' && clientId > 0;
+  const response = await api(isEditing ? `/api/clients/${clientId}` : '/api/clients', {
+    method: isEditing ? 'PUT' : 'POST',
     body: payload
   });
 
@@ -2908,7 +3886,7 @@ async function onAddCargoItem(event) {
   const quantity = Number(quantityInput.value);
 
   if (!Number.isInteger(canId) || !Number.isInteger(quantity) || quantity <= 0) {
-    showToast('Selecione uma lata e uma quantidade válida.');
+    showToast('Selecione um produto e uma quantidade valida.');
     return;
   }
 
@@ -4665,3 +5643,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
     syncVisualization3DPanel();
 });
+

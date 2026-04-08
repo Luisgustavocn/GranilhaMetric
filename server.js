@@ -17,6 +17,13 @@ const MAX_NAME_LENGTH = 120;
 const MAX_EMAIL_LENGTH = 254;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DB_PATH = path.join(__dirname, 'database.sqlite');
+const AVAILABLE_MODULES = [
+  { key: 'loading3d', label: 'Carregamento 3D' }
+];
+const MODULE_KEYS = new Set(AVAILABLE_MODULES.map((module) => module.key));
+const PLATFORM_ADMIN_EMAIL = 'master@granilha.local';
+const PLATFORM_ADMIN_PASSWORD = 'Master@123456';
+const DEFAULT_COMPANY_NAME = 'Empresa Padrao';
 
 const db = new DatabaseSync(DB_PATH);
 const sessions = new Map();
@@ -95,13 +102,49 @@ setInterval(() => {
 function initDb() {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec(`
+    CREATE TABLE IF NOT EXISTS companies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
+      contact_name TEXT,
+      contact_email TEXT,
+      contact_phone TEXT,
+      document TEXT,
+      billing_amount REAL NOT NULL DEFAULT 0,
+      billing_due_day INTEGER,
+      payment_status TEXT NOT NULL DEFAULT 'pending' CHECK(payment_status IN ('pending', 'paid', 'overdue')),
+      last_payment_date TEXT,
+      notes TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS company_modules (
+      company_id INTEGER NOT NULL,
+      module_key TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (company_id, module_key),
+      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
+      is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+      is_platform_admin INTEGER NOT NULL DEFAULT 0 CHECK(is_platform_admin IN (0, 1)),
+      company_id INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS user_modules (
+      user_id INTEGER NOT NULL,
+      module_key TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, module_key),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS can_categories (
@@ -219,9 +262,13 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_client_orders_order_id ON client_orders(order_id);
     CREATE INDEX IF NOT EXISTS idx_client_orders_status ON client_orders(status);
     CREATE INDEX IF NOT EXISTS idx_client_orders_order_date ON client_orders(order_date);
+    CREATE INDEX IF NOT EXISTS idx_user_modules_module_key ON user_modules(module_key);
+    CREATE INDEX IF NOT EXISTS idx_company_modules_module_key ON company_modules(module_key);
   `);
 
   ensureOrderSchemaCompatibility();
+  ensureUserAccessSchemaCompatibility();
+  ensureCompanySchemaCompatibility();
   normalizeCanNominalVolumes();
 
   const userCount = db.prepare('SELECT COUNT(*) AS count FROM users').get().count;
@@ -236,7 +283,9 @@ function initDb() {
   // Caminhões padrão não serão mais adicionados automaticamente
 
   const canCount = db.prepare('SELECT COUNT(*) AS count FROM cans').get().count;
-  // Latas padrão não serão mais adicionadas automaticamente
+  // Produtos padrao nao serao mais adicionados automaticamente
+
+  ensurePlatformAdminUser();
 }
 
 function ensureOrderSchemaCompatibility() {
@@ -354,7 +403,8 @@ function ensureOrderSchemaCompatibility() {
     db.exec('ALTER TABLE clients ADD COLUMN total_orders INTEGER DEFAULT 0;');
     db.exec('ALTER TABLE clients ADD COLUMN total_spent REAL DEFAULT 0.0;');
     db.exec('ALTER TABLE clients ADD COLUMN last_order_date TEXT;');
-    db.exec('ALTER TABLE clients ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;');
+    db.exec('ALTER TABLE clients ADD COLUMN updated_at TEXT;');
+    db.exec("UPDATE clients SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = '';");
     db.exec('CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status);');
   }
 
@@ -387,6 +437,117 @@ function ensureOrderSchemaCompatibility() {
     db.exec('CREATE INDEX IF NOT EXISTS idx_client_orders_status ON client_orders(status);');
     db.exec('CREATE INDEX IF NOT EXISTS idx_client_orders_order_date ON client_orders(order_date);');
   }
+}
+
+function ensureUserAccessSchemaCompatibility() {
+  const userColumns = db.prepare('PRAGMA table_info(users)').all();
+  const hasIsActive = userColumns.some((column) => column.name === 'is_active');
+
+  if (!hasIsActive) {
+    db.exec('ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1));');
+  }
+
+  const users = db.prepare('SELECT id, role FROM users').all();
+  for (const user of users) {
+    const existingModules = getUserModules(user.id);
+    const validModules = normalizeModuleKeys(existingModules);
+    const modules = user.role === 'admin'
+      ? getDefaultModulesForRole(user.role)
+      : (validModules.length ? validModules : getDefaultModulesForRole(user.role));
+
+    if (modules.length !== existingModules.length || modules.some((moduleKey, index) => moduleKey !== existingModules[index])) {
+      replaceUserModules(user.id, modules);
+    }
+  }
+}
+
+function ensureCompanySchemaCompatibility() {
+  const companyColumns = db.prepare('PRAGMA table_info(companies)').all();
+  if (!companyColumns.some((column) => column.name === 'contact_name')) {
+    db.exec('ALTER TABLE companies ADD COLUMN contact_name TEXT;');
+  }
+  if (!companyColumns.some((column) => column.name === 'contact_email')) {
+    db.exec('ALTER TABLE companies ADD COLUMN contact_email TEXT;');
+  }
+  if (!companyColumns.some((column) => column.name === 'contact_phone')) {
+    db.exec('ALTER TABLE companies ADD COLUMN contact_phone TEXT;');
+  }
+  if (!companyColumns.some((column) => column.name === 'document')) {
+    db.exec('ALTER TABLE companies ADD COLUMN document TEXT;');
+  }
+  if (!companyColumns.some((column) => column.name === 'billing_amount')) {
+    db.exec('ALTER TABLE companies ADD COLUMN billing_amount REAL NOT NULL DEFAULT 0;');
+  }
+  if (!companyColumns.some((column) => column.name === 'billing_due_day')) {
+    db.exec('ALTER TABLE companies ADD COLUMN billing_due_day INTEGER;');
+  }
+  if (!companyColumns.some((column) => column.name === 'payment_status')) {
+    db.exec('ALTER TABLE companies ADD COLUMN payment_status TEXT NOT NULL DEFAULT "pending" CHECK(payment_status IN ("pending", "paid", "overdue"));');
+  }
+  if (!companyColumns.some((column) => column.name === 'last_payment_date')) {
+    db.exec('ALTER TABLE companies ADD COLUMN last_payment_date TEXT;');
+  }
+  if (!companyColumns.some((column) => column.name === 'notes')) {
+    db.exec('ALTER TABLE companies ADD COLUMN notes TEXT;');
+  }
+  if (!companyColumns.some((column) => column.name === 'updated_at')) {
+    db.exec('ALTER TABLE companies ADD COLUMN updated_at TEXT;');
+    db.exec("UPDATE companies SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = '';");
+  }
+
+  const userColumns = db.prepare('PRAGMA table_info(users)').all();
+  if (!userColumns.some((column) => column.name === 'company_id')) {
+    db.exec('ALTER TABLE users ADD COLUMN company_id INTEGER;');
+  }
+  if (!userColumns.some((column) => column.name === 'is_platform_admin')) {
+    db.exec('ALTER TABLE users ADD COLUMN is_platform_admin INTEGER NOT NULL DEFAULT 0 CHECK(is_platform_admin IN (0, 1));');
+  }
+
+  const tablesToScope = ['can_categories', 'clients', 'cans', 'trucks', 'orders'];
+  for (const tableName of tablesToScope) {
+    const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+    if (!columns.some((column) => column.name === 'company_id')) {
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN company_id INTEGER;`);
+    }
+  }
+
+  const defaultCompanyId = ensureDefaultCompany();
+  const defaultCompanyModules = getDefaultModulesForRole('admin');
+  replaceCompanyModules(defaultCompanyId, defaultCompanyModules);
+
+  db.prepare('UPDATE users SET company_id = ? WHERE company_id IS NULL AND COALESCE(is_platform_admin, 0) = 0').run(defaultCompanyId);
+  db.prepare('UPDATE can_categories SET company_id = ? WHERE company_id IS NULL').run(defaultCompanyId);
+  db.prepare('UPDATE clients SET company_id = ? WHERE company_id IS NULL').run(defaultCompanyId);
+  db.prepare('UPDATE cans SET company_id = ? WHERE company_id IS NULL').run(defaultCompanyId);
+  db.prepare('UPDATE trucks SET company_id = ? WHERE company_id IS NULL').run(defaultCompanyId);
+  db.prepare('UPDATE orders SET company_id = ? WHERE company_id IS NULL').run(defaultCompanyId);
+}
+
+function ensureDefaultCompany() {
+  const existing = db.prepare('SELECT id FROM companies ORDER BY id ASC LIMIT 1').get();
+  if (existing) {
+    return Number(existing.id);
+  }
+
+  const result = db.prepare(`
+    INSERT INTO companies (name, status)
+    VALUES (?, 'active')
+  `).run(DEFAULT_COMPANY_NAME);
+  return Number(result.lastInsertRowid);
+}
+
+function ensurePlatformAdminUser() {
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(PLATFORM_ADMIN_EMAIL);
+  if (existing) {
+    db.prepare('UPDATE users SET role = ?, is_active = 1, is_platform_admin = 1, company_id = NULL WHERE id = ?')
+      .run('admin', existing.id);
+    return;
+  }
+
+  db.prepare(`
+    INSERT INTO users (name, email, password_hash, role, is_active, is_platform_admin, company_id)
+    VALUES (?, ?, ?, ?, 1, 1, NULL)
+  `).run('Master Plataforma', PLATFORM_ADMIN_EMAIL, hashPassword(PLATFORM_ADMIN_PASSWORD), 'admin');
 }
 
 function normalizeCanNominalVolumes() {
@@ -434,11 +595,104 @@ function inferCommercialVolumeCm3(nameInput) {
   return Math.max(...volumesCm3);
 }
 
+function getDefaultModulesForRole(role) {
+  if (role === 'admin') {
+    return AVAILABLE_MODULES.map((module) => module.key);
+  }
+
+  return ['loading3d'];
+}
+
+function normalizeModuleKeys(modules) {
+  const input = Array.isArray(modules) ? modules : [];
+  const unique = new Set();
+
+  for (const moduleKey of input) {
+    const normalized = String(moduleKey || '').trim();
+    if (MODULE_KEYS.has(normalized)) {
+      unique.add(normalized);
+    }
+  }
+
+  return Array.from(unique);
+}
+
+function getModulesForPersistence(role, modules) {
+  if (role === 'admin') {
+    return getDefaultModulesForRole(role);
+  }
+
+  const normalizedModules = normalizeModuleKeys(modules);
+  return normalizedModules.length ? normalizedModules : getDefaultModulesForRole(role);
+}
+
+function getUserModules(userId) {
+  return db.prepare(`
+    SELECT module_key
+    FROM user_modules
+    WHERE user_id = ?
+    ORDER BY module_key ASC
+  `).all(userId).map((row) => row.module_key);
+}
+
+function getCompanyModules(companyId) {
+  if (!companyId) return [];
+  return db.prepare(`
+    SELECT module_key
+    FROM company_modules
+    WHERE company_id = ?
+    ORDER BY module_key ASC
+  `).all(companyId).map((row) => row.module_key);
+}
+
+function replaceUserModules(userId, modules) {
+  const normalizedModules = normalizeModuleKeys(modules);
+  const deleteModules = db.prepare('DELETE FROM user_modules WHERE user_id = ?');
+  const insertModule = db.prepare(`
+    INSERT OR IGNORE INTO user_modules (user_id, module_key)
+    VALUES (?, ?)
+  `);
+  deleteModules.run(userId);
+  for (const moduleKey of normalizedModules) {
+    insertModule.run(userId, moduleKey);
+  }
+}
+
+function replaceCompanyModules(companyId, modules) {
+  const normalizedModules = normalizeModuleKeys(modules);
+  const deleteModules = db.prepare('DELETE FROM company_modules WHERE company_id = ?');
+  const insertModule = db.prepare(`
+    INSERT OR IGNORE INTO company_modules (company_id, module_key)
+    VALUES (?, ?)
+  `);
+  deleteModules.run(companyId);
+  for (const moduleKey of normalizedModules) {
+    insertModule.run(companyId, moduleKey);
+  }
+}
+
+function userHasModule(user, moduleKey) {
+  if (!user || !moduleKey) return false;
+  if (isPlatformAdmin(user)) return true;
+  const safe = safeUser(user);
+  return Array.isArray(safe.modules) && safe.modules.includes(moduleKey);
+}
+
+function getTargetCompanyId(currentUser, requestedCompanyId = null) {
+  if (isPlatformAdmin(currentUser) && requestedCompanyId) {
+    return Number(requestedCompanyId);
+  }
+
+  return Number(currentUser.company_id || 0);
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const canIdMatch = url.pathname.match(/^\/api\/cans\/(\d+)$/);
+  const clientIdMatch = url.pathname.match(/^\/api\/clients\/(\d+)$/);
   const truckIdMatch = url.pathname.match(/^\/api\/trucks\/(\d+)$/);
   const userIdMatch = url.pathname.match(/^\/api\/users\/(\d+)$/);
+  const companyIdMatch = url.pathname.match(/^\/api\/platform\/companies\/(\d+)$/);
   const orderIdMatch = url.pathname.match(/^\/api\/orders\/(\d+)$/);
   const orderConcludeMatch = url.pathname.match(/^\/api\/orders\/(\d+)\/conclude$/);
 
@@ -475,51 +729,98 @@ async function handleApi(req, res, url) {
   if (method === 'GET' && url.pathname === '/api/me') {
     const session = requireSession(req, res);
     if (!session) return;
-    return sendJson(res, 200, { user: safeUser(session.user), csrfToken: session.session.csrfToken });
+    return sendJson(res, 200, {
+      user: safeUser(session.user),
+      availableModules: AVAILABLE_MODULES,
+      csrfToken: session.session.csrfToken
+    });
+  }
+
+  if (method === 'GET' && url.pathname === '/api/platform/companies') {
+    const user = requirePlatformAdmin(req, res);
+    if (!user) return;
+    return listPlatformCompanies(res);
+  }
+
+  if (method === 'POST' && url.pathname === '/api/platform/companies') {
+    const user = requirePlatformAdmin(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    return createCompany(res, body);
+  }
+
+  if (companyIdMatch && method === 'PUT') {
+    const user = requirePlatformAdmin(req, res);
+    if (!user) return;
+    const body = await readJson(req);
+    return updateCompany(res, Number(companyIdMatch[1]), body);
   }
 
   if (method === 'GET' && url.pathname === '/api/cans') {
     const user = requireAuth(req, res);
     if (!user) return;
+    if (!userHasModule(user, 'loading3d')) {
+      return sendJson(res, 403, { error: 'Seu usuario nao possui acesso a este modulo.' });
+    }
     const cans = db.prepare(`
       SELECT c.*, cat.name as category_name 
       FROM cans c 
       LEFT JOIN can_categories cat ON c.category_id = cat.id 
+      WHERE c.company_id = ?
       ORDER BY c.created_at DESC
-    `).all();
+    `).all(getTargetCompanyId(user));
     return sendJson(res, 200, { cans });
   }
 
   if (method === 'GET' && url.pathname === '/api/clients') {
     const user = requireAuth(req, res);
     if (!user) return;
-    const clients = db.prepare('SELECT * FROM clients ORDER BY name ASC').all();
+    if (!userHasModule(user, 'loading3d')) {
+      return sendJson(res, 403, { error: 'Seu usuario nao possui acesso a este modulo.' });
+    }
+    const clients = db.prepare('SELECT * FROM clients WHERE company_id = ? ORDER BY name ASC').all(getTargetCompanyId(user));
     return sendJson(res, 200, { clients });
   }
 
   if (method === 'POST' && url.pathname === '/api/clients') {
-    const user = requireAuth(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
     return createClient(user, res, body);
   }
 
+  if (clientIdMatch && method === 'PUT') {
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
+    if (!user) return;
+    const body = await readJson(req);
+    return updateClient(user, res, Number(clientIdMatch[1]), body);
+  }
+
+  if (clientIdMatch && method === 'DELETE') {
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
+    if (!user) return;
+    return deleteClient(user, res, Number(clientIdMatch[1]));
+  }
+
   if (method === 'GET' && url.pathname === '/api/can-categories') {
     const user = requireAuth(req, res);
     if (!user) return;
-    const categories = db.prepare('SELECT * FROM can_categories ORDER BY name ASC').all();
+    if (!userHasModule(user, 'loading3d')) {
+      return sendJson(res, 403, { error: 'Seu usuario nao possui acesso a este modulo.' });
+    }
+    const categories = db.prepare('SELECT * FROM can_categories WHERE company_id = ? ORDER BY name ASC').all(getTargetCompanyId(user));
     return sendJson(res, 200, { categories });
   }
 
   if (method === 'POST' && url.pathname === '/api/can-categories') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
     return createCanCategory(user, res, body);
   }
 
   if (method === 'PUT' && url.pathname.startsWith('/api/can-categories/')) {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const categoryId = Number(url.pathname.split('/')[3]);
     if (!Number.isInteger(categoryId)) {
@@ -530,7 +831,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'DELETE' && url.pathname.startsWith('/api/can-categories/')) {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const categoryId = Number(url.pathname.split('/')[3]);
     if (!Number.isInteger(categoryId)) {
@@ -540,63 +841,89 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'POST' && url.pathname === '/api/cans') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
-    return createCan(res, body);
+    return createCan(user, res, body);
   }
 
   if (canIdMatch && method === 'PUT') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
-    return updateCan(res, Number(canIdMatch[1]), body);
+    return updateCan(user, res, Number(canIdMatch[1]), body);
   }
 
   if (canIdMatch && method === 'DELETE') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
-    return deleteCan(res, Number(canIdMatch[1]));
+    return deleteCan(user, res, Number(canIdMatch[1]));
   }
 
   if (method === 'GET' && url.pathname === '/api/trucks') {
     const user = requireAuth(req, res);
     if (!user) return;
-    const trucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+    if (!userHasModule(user, 'loading3d')) {
+      return sendJson(res, 403, { error: 'Seu usuario nao possui acesso a este modulo.' });
+    }
+    const trucks = db.prepare('SELECT * FROM trucks WHERE company_id = ? ORDER BY volume_cm3 ASC').all(getTargetCompanyId(user));
     return sendJson(res, 200, { trucks });
   }
 
   if (method === 'POST' && url.pathname === '/api/trucks') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
-    return createTruck(res, body);
+    return createTruck(user, res, body);
   }
 
   if (truckIdMatch && method === 'PUT') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
-    return updateTruck(res, Number(truckIdMatch[1]), body);
+    return updateTruck(user, res, Number(truckIdMatch[1]), body);
   }
 
   if (truckIdMatch && method === 'DELETE') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
-    return deleteTruck(res, Number(truckIdMatch[1]));
+    return deleteTruck(user, res, Number(truckIdMatch[1]));
   }
 
   if (method === 'POST' && url.pathname === '/api/users') {
     const user = requireAdmin(req, res);
     if (!user) return;
     const body = await readJson(req);
-    return createUser(res, body);
+    return createUser(user, res, body);
   }
 
   if (method === 'GET' && url.pathname === '/api/users') {
     const user = requireAdmin(req, res);
     if (!user) return;
-    const users = db.prepare('SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC').all();
+    const requestedCompanyId = url.searchParams.get('companyId');
+    const params = [];
+    let sql = `
+      SELECT id, name, email, role, is_active, is_platform_admin, company_id, created_at
+      FROM users
+      WHERE COALESCE(is_platform_admin, 0) = 0
+    `;
+
+    if (isPlatformAdmin(user)) {
+      if (requestedCompanyId) {
+        sql += ' AND company_id = ?';
+        params.push(getTargetCompanyId(user, requestedCompanyId));
+      }
+    } else {
+      sql += ' AND company_id = ? AND role = ?';
+      params.push(getTargetCompanyId(user), 'user');
+    }
+
+    sql += ' ORDER BY company_id ASC, created_at DESC';
+    const users = db.prepare(sql).all(...params)
+      .map((entry) => ({
+        ...entry,
+        modules: getCompanyModules(entry.company_id)
+      }));
     return sendJson(res, 200, { users });
   }
 
@@ -614,23 +941,24 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && url.pathname === '/api/orders') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
-    return listOrders(res);
+    return listOrders(user, res);
   }
 
   if (method === 'POST' && url.pathname === '/api/orders') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
     return createOrder(user, res, body);
   }
 
   if (method === 'GET' && url.pathname === '/api/truck-availability') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const fallbackDate = url.searchParams.get('date');
     return getTruckAvailability(
+      user,
       res,
       url.searchParams.get('startDate') || fallbackDate,
       url.searchParams.get('endDate') || fallbackDate
@@ -638,10 +966,11 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && url.pathname === '/api/truck-schedule') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const fallbackDate = url.searchParams.get('date');
     return getTruckSchedule(
+      user,
       res,
       url.searchParams.get('startDate') || fallbackDate,
       url.searchParams.get('endDate') || fallbackDate
@@ -649,35 +978,35 @@ async function handleApi(req, res, url) {
   }
 
   if (orderIdMatch && method === 'GET') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
-    return getOrderDetails(res, Number(orderIdMatch[1]));
+    return getOrderDetails(user, res, Number(orderIdMatch[1]));
   }
 
   if (orderIdMatch && method === 'PUT') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
     return updateOrder(user, res, Number(orderIdMatch[1]), body);
   }
 
   if (orderConcludeMatch && method === 'POST') {
-    const user = requireAdmin(req, res);
+    const user = requireCompanyModuleAccess(req, res, 'loading3d');
     if (!user) return;
     return concludeOrder(user, res, Number(orderConcludeMatch[1]));
   }
 
   if (orderIdMatch && method === 'DELETE') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
     return deleteOrder(user, res, Number(orderIdMatch[1]));
   }
 
   if (method === 'POST' && url.pathname === '/api/calculate') {
-    const user = requireAuth(req, res);
+    const user = requireModuleAccess(req, res, 'loading3d');
     if (!user) return;
     const body = await readJson(req);
-    return calculateLoad(res, body);
+    return calculateLoad(user, res, body);
   }
 
   sendJson(res, 404, { error: 'Rota não encontrada.' });
@@ -703,13 +1032,24 @@ function login(req, res, body) {
     return sendJson(res, 401, { error: 'Credenciais invalidas.' });
   }
 
+  if (!user.is_active) {
+    return sendJson(res, 403, { error: 'Seu acesso esta inativo. Fale com o administrador.' });
+  }
+
+  if (!isPlatformAdmin(user) && user.company_id) {
+    const company = db.prepare('SELECT status FROM companies WHERE id = ?').get(user.company_id);
+    if (!company || company.status !== 'active') {
+      return sendJson(res, 403, { error: 'A empresa vinculada a este usuario esta inativa.' });
+    }
+  }
+
   clearLoginFailures(req);
 
   const sessionToken = crypto.randomBytes(32).toString('hex');
   const session = createSessionRecord(req, user.id);
   sessions.set(sessionToken, session);
 
-  setCookie(res, 'sid', sessionToken, {
+  setCookie(res, getSessionCookieName(req), sessionToken, {
     httpOnly: true,
     sameSite: 'Strict',
     secure: isSecureRequest(req),
@@ -717,20 +1057,25 @@ function login(req, res, body) {
     path: '/'
   });
 
-  sendJson(res, 200, { user: safeUser(user), csrfToken: session.csrfToken });
+  sendJson(res, 200, { user: safeUser(user), availableModules: AVAILABLE_MODULES, csrfToken: session.csrfToken });
 }
 
 function logout(req, res) {
   const cookies = parseCookies(req.headers.cookie || '');
-  if (cookies.sid) {
-    sessions.delete(cookies.sid);
+  const sessionToken = cookies['__Host-sid'] || cookies.sid;
+  if (sessionToken) {
+    sessions.delete(sessionToken);
   }
 
-  setCookie(res, 'sid', '', { httpOnly: true, sameSite: 'Strict', secure: isSecureRequest(req), maxAge: 0, path: '/' });
+  const secure = isSecureRequest(req);
+  setCookie(res, 'sid', '', { httpOnly: true, sameSite: 'Strict', secure, maxAge: 0, path: '/' });
+  setCookie(res, '__Host-sid', '', { httpOnly: true, sameSite: 'Strict', secure: true, maxAge: 0, path: '/' });
+  res.setHeader('Clear-Site-Data', '"cache", "cookies", "storage"');
   sendJson(res, 200, { ok: true });
 }
 
 function createCanCategory(currentUser, res, body) {
+  const companyId = getTargetCompanyId(currentUser);
   const name = String(body?.name || '').trim();
 
   const nameError = validateEntityName(name, 'categoria');
@@ -738,17 +1083,17 @@ function createCanCategory(currentUser, res, body) {
     return sendJson(res, 400, { error: nameError });
   }
 
-  const existingCategory = db.prepare('SELECT id FROM can_categories WHERE name = ?').get(name);
+  const existingCategory = db.prepare('SELECT id FROM can_categories WHERE name = ? AND company_id = ?').get(name, companyId);
   if (existingCategory) {
     return sendJson(res, 409, { error: 'Já existe uma categoria com este nome.' });
   }
 
-  const result = db.prepare('INSERT INTO can_categories (name) VALUES (?)').run(name);
+  const result = db.prepare('INSERT INTO can_categories (name, company_id) VALUES (?, ?)').run(name, companyId);
   sendJson(res, 201, { ok: true, categoryId: result.lastInsertRowid });
 }
 
 function updateCanCategory(currentUser, res, categoryId, body) {
-  const existing = db.prepare('SELECT * FROM can_categories WHERE id = ?').get(categoryId);
+  const existing = db.prepare('SELECT * FROM can_categories WHERE id = ? AND company_id = ?').get(categoryId, getTargetCompanyId(currentUser));
   if (!existing) {
     return sendJson(res, 404, { error: 'Categoria não encontrada.' });
   }
@@ -761,7 +1106,7 @@ function updateCanCategory(currentUser, res, categoryId, body) {
   }
 
   if (name !== existing.name) {
-    const nameConflict = db.prepare('SELECT id FROM can_categories WHERE name = ? AND id != ?').get(name, categoryId);
+    const nameConflict = db.prepare('SELECT id FROM can_categories WHERE name = ? AND id != ? AND company_id = ?').get(name, categoryId, getTargetCompanyId(currentUser));
     if (nameConflict) {
       return sendJson(res, 409, { error: 'Já existe outra categoria com este nome.' });
     }
@@ -772,15 +1117,15 @@ function updateCanCategory(currentUser, res, categoryId, body) {
 }
 
 function deleteCanCategory(currentUser, res, categoryId) {
-  const existing = db.prepare('SELECT * FROM can_categories WHERE id = ?').get(categoryId);
+  const existing = db.prepare('SELECT * FROM can_categories WHERE id = ? AND company_id = ?').get(categoryId, getTargetCompanyId(currentUser));
   if (!existing) {
     return sendJson(res, 404, { error: 'Categoria não encontrada.' });
   }
 
-  const canCount = db.prepare('SELECT COUNT(*) AS count FROM cans WHERE category_id = ?').get(categoryId).count;
+  const canCount = db.prepare('SELECT COUNT(*) AS count FROM cans WHERE category_id = ? AND company_id = ?').get(categoryId, getTargetCompanyId(currentUser)).count;
   if (canCount > 0) {
     return sendJson(res, 400, { 
-      error: `Não é possível excluir esta categoria. Existem ${canCount} lata(s) associadas a esta categoria.` 
+      error: `Não é possível excluir esta categoria. Existem ${canCount} produto(s) associados a esta categoria.` 
     });
   }
 
@@ -789,23 +1134,131 @@ function deleteCanCategory(currentUser, res, categoryId) {
 }
 
 function createClient(currentUser, res, body) {
+  const companyId = getTargetCompanyId(currentUser);
   const name = String(body?.name || '').trim();
+  const email = String(body?.email || '').trim().toLowerCase();
+  const phone = String(body?.phone || '').trim();
+  const address = String(body?.address || '').trim();
+  const city = String(body?.city || '').trim();
+  const state = String(body?.state || '').trim().toUpperCase();
+  const cnpjCpf = String(body?.cnpj_cpf || '').trim();
+  const contactPerson = String(body?.contact_person || '').trim();
+  const notes = String(body?.notes || '').trim();
+  const status = String(body?.status || 'active').trim();
 
   const nameError = validateEntityName(name, 'cliente');
-  if (nameError) {
-    return sendJson(res, 400, { error: nameError });
+  const emailError = email ? validateEmailAddress(email) : null;
+  if (nameError || emailError || !['active', 'inactive', 'suspended'].includes(status)) {
+    return sendJson(res, 400, { error: nameError || emailError || 'Dados do cliente invalidos.' });
   }
 
-  const existingClient = db.prepare('SELECT id FROM clients WHERE name = ?').get(name);
+  const existingClient = db.prepare('SELECT id FROM clients WHERE name = ? AND company_id = ?').get(name, companyId);
   if (existingClient) {
     return sendJson(res, 409, { error: 'Já existe um cliente com este nome.' });
   }
 
-  const result = db.prepare('INSERT INTO clients (name) VALUES (?)').run(name);
+  const result = db.prepare(`
+    INSERT INTO clients (
+      name,
+      email,
+      phone,
+      address,
+      city,
+      state,
+      cnpj_cpf,
+      contact_person,
+      notes,
+      status,
+      company_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    name,
+    email || null,
+    phone || null,
+    address || null,
+    city || null,
+    state || null,
+    cnpjCpf || null,
+    contactPerson || null,
+    notes || null,
+    status,
+    companyId
+  );
   sendJson(res, 201, { ok: true, clientId: result.lastInsertRowid });
 }
 
-function createCan(res, body) {
+function updateClient(currentUser, res, clientId, body) {
+  const companyId = getTargetCompanyId(currentUser);
+  const existing = db.prepare('SELECT * FROM clients WHERE id = ? AND company_id = ?').get(clientId, companyId);
+  if (!existing) {
+    return sendJson(res, 404, { error: 'Cliente nao encontrado.' });
+  }
+
+  const name = String(body?.name ?? existing.name).trim();
+  const email = String(body?.email ?? existing.email ?? '').trim().toLowerCase();
+  const phone = String(body?.phone ?? existing.phone ?? '').trim();
+  const address = String(body?.address ?? existing.address ?? '').trim();
+  const city = String(body?.city ?? existing.city ?? '').trim();
+  const state = String(body?.state ?? existing.state ?? '').trim().toUpperCase();
+  const cnpjCpf = String(body?.cnpj_cpf ?? existing.cnpj_cpf ?? '').trim();
+  const contactPerson = String(body?.contact_person ?? existing.contact_person ?? '').trim();
+  const notes = String(body?.notes ?? existing.notes ?? '').trim();
+  const status = String(body?.status ?? existing.status ?? 'active').trim();
+
+  const nameError = validateEntityName(name, 'cliente');
+  const emailError = email ? validateEmailAddress(email) : null;
+  if (nameError || emailError || !['active', 'inactive', 'suspended'].includes(status)) {
+    return sendJson(res, 400, { error: nameError || emailError || 'Dados do cliente invalidos.' });
+  }
+
+  const duplicate = db.prepare('SELECT id FROM clients WHERE name = ? AND company_id = ? AND id <> ?').get(name, companyId, clientId);
+  if (duplicate) {
+    return sendJson(res, 409, { error: 'Ja existe um cliente com este nome.' });
+  }
+
+  db.prepare(`
+    UPDATE clients
+    SET name = ?,
+        email = ?,
+        phone = ?,
+        address = ?,
+        city = ?,
+        state = ?,
+        cnpj_cpf = ?,
+        contact_person = ?,
+        notes = ?,
+        status = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+      AND company_id = ?
+  `).run(
+    name,
+    email || null,
+    phone || null,
+    address || null,
+    city || null,
+    state || null,
+    cnpjCpf || null,
+    contactPerson || null,
+    notes || null,
+    status,
+    clientId,
+    companyId
+  );
+
+  sendJson(res, 200, { ok: true });
+}
+
+function deleteClient(currentUser, res, clientId) {
+  const result = db.prepare('DELETE FROM clients WHERE id = ? AND company_id = ?').run(clientId, getTargetCompanyId(currentUser));
+  if (!result.changes) {
+    return sendJson(res, 404, { error: 'Cliente nao encontrado.' });
+  }
+
+  sendJson(res, 200, { ok: true });
+}
+
+function createCan(currentUser, res, body) {
   const parsed = parseCanPayload(body);
   if (parsed.error) {
     return sendJson(res, 400, { error: parsed.error });
@@ -815,17 +1268,17 @@ function createCan(res, body) {
   const categoryId = body?.categoryId ? Number(body.categoryId) : null;
 
   db.prepare(`
-    INSERT INTO cans (name, category_id, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, categoryId, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3);
+    INSERT INTO cans (name, category_id, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3, company_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, categoryId, shape, lengthCm, widthCm, depthCm, diameterCm, heightCm, volumeCm3, getTargetCompanyId(currentUser));
 
   sendJson(res, 201, { ok: true });
 }
 
-function updateCan(res, canId, body) {
-  const existing = db.prepare('SELECT * FROM cans WHERE id = ?').get(canId);
+function updateCan(currentUser, res, canId, body) {
+  const existing = db.prepare('SELECT * FROM cans WHERE id = ? AND company_id = ?').get(canId, getTargetCompanyId(currentUser));
   if (!existing) {
-    return sendJson(res, 404, { error: 'Lata não encontrada.' });
+    return sendJson(res, 404, { error: 'Produto nao encontrado.' });
   }
 
   const mergedBody = {
@@ -856,16 +1309,16 @@ function updateCan(res, canId, body) {
   sendJson(res, 200, { ok: true });
 }
 
-function deleteCan(res, canId) {
-  const result = db.prepare('DELETE FROM cans WHERE id = ?').run(canId);
+function deleteCan(currentUser, res, canId) {
+  const result = db.prepare('DELETE FROM cans WHERE id = ? AND company_id = ?').run(canId, getTargetCompanyId(currentUser));
   if (!result.changes) {
-    return sendJson(res, 404, { error: 'Lata não encontrada.' });
+    return sendJson(res, 404, { error: 'Produto nao encontrado.' });
   }
 
   sendJson(res, 200, { ok: true });
 }
 
-function createTruck(res, body) {
+function createTruck(currentUser, res, body) {
   const name = String(body?.name || '').trim();
   const lengthCm = Number(body?.lengthCm);
   const widthCm = Number(body?.widthCm);
@@ -886,15 +1339,15 @@ function createTruck(res, body) {
   const volumeCm3 = lengthCm * widthCm * heightCm;
 
   db.prepare(`
-    INSERT INTO trucks (name, length_cm, width_cm, height_cm, quantity, volume_cm3)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(name, lengthCm, widthCm, heightCm, quantity, volumeCm3);
+    INSERT INTO trucks (name, length_cm, width_cm, height_cm, quantity, volume_cm3, company_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(name, lengthCm, widthCm, heightCm, quantity, volumeCm3, getTargetCompanyId(currentUser));
 
   sendJson(res, 201, { ok: true });
 }
 
-function updateTruck(res, truckId, body) {
-  const existing = db.prepare('SELECT * FROM trucks WHERE id = ?').get(truckId);
+function updateTruck(currentUser, res, truckId, body) {
+  const existing = db.prepare('SELECT * FROM trucks WHERE id = ? AND company_id = ?').get(truckId, getTargetCompanyId(currentUser));
   if (!existing) {
     return sendJson(res, 404, { error: 'Caminhão não encontrado.' });
   }
@@ -940,7 +1393,7 @@ function updateTruck(res, truckId, body) {
   sendJson(res, 200, { ok: true });
 }
 
-function deleteTruck(res, truckId) {
+function deleteTruck(currentUser, res, truckId) {
   const activeReservations = db.prepare(`
     SELECT COALESCE(SUM(ot.quantity_reserved), 0) AS reserved
     FROM order_trucks ot
@@ -955,7 +1408,7 @@ function deleteTruck(res, truckId) {
     });
   }
 
-  const result = db.prepare('DELETE FROM trucks WHERE id = ?').run(truckId);
+  const result = db.prepare('DELETE FROM trucks WHERE id = ? AND company_id = ?').run(truckId, getTargetCompanyId(currentUser));
   if (!result.changes) {
     return sendJson(res, 404, { error: 'Caminhão não encontrado.' });
   }
@@ -963,11 +1416,22 @@ function deleteTruck(res, truckId) {
   sendJson(res, 200, { ok: true });
 }
 
-function createUser(res, body) {
+function createUser(currentUser, res, body) {
   const name = String(body?.name || '').trim();
   const email = String(body?.email || '').trim().toLowerCase();
   const password = String(body?.password || '');
-  const role = String(body?.role || 'user').trim();
+  const requestedRole = String(body?.role || 'user').trim();
+  const role = isPlatformAdmin(currentUser) ? requestedRole : 'user';
+  const isActive = body?.isActive === undefined ? true : Boolean(body?.isActive);
+  const companyId = isPlatformAdmin(currentUser)
+    ? getTargetCompanyId(currentUser, body?.companyId)
+    : getTargetCompanyId(currentUser);
+  const companyModules = getCompanyModules(companyId);
+  const modules = isPlatformAdmin(currentUser)
+    ? (role === 'admin'
+      ? companyModules
+      : getModulesForPersistence(role, body?.modules).filter((moduleKey) => companyModules.includes(moduleKey)))
+    : companyModules;
 
   const nameError = validateEntityName(name, 'usuário');
   const emailError = validateEmailAddress(email);
@@ -982,46 +1446,68 @@ function createUser(res, body) {
     return sendJson(res, 409, { error: 'E-mail já cadastrado.' });
   }
 
-  db.prepare(`
-    INSERT INTO users (name, email, password_hash, role)
-    VALUES (?, ?, ?, ?)
-  `).run(name, email, hashPassword(password), role);
+  const result = db.prepare(`
+    INSERT INTO users (name, email, password_hash, role, is_active, is_platform_admin, company_id)
+    VALUES (?, ?, ?, ?, ?, 0, ?)
+  `).run(name, email, hashPassword(password), role, isActive ? 1 : 0, companyId);
+  replaceUserModules(Number(result.lastInsertRowid), modules);
 
   sendJson(res, 201, { ok: true });
 }
 
 function updateUser(currentUser, res, userId, body) {
-  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  const existing = isPlatformAdmin(currentUser)
+    ? db.prepare('SELECT * FROM users WHERE id = ? AND COALESCE(is_platform_admin, 0) = 0').get(userId)
+    : db.prepare('SELECT * FROM users WHERE id = ? AND company_id = ? AND role = ? AND COALESCE(is_platform_admin, 0) = 0')
+      .get(userId, getTargetCompanyId(currentUser), 'user');
   if (!existing) {
-    return sendJson(res, 404, { error: 'Usuário não encontrado.' });
+    return sendJson(res, 404, { error: 'Usuario nao encontrado.' });
   }
 
   const name = String(body?.name ?? existing.name).trim();
   const email = String(body?.email ?? existing.email).trim().toLowerCase();
-  const role = String(body?.role ?? existing.role).trim();
+  const requestedRole = String(body?.role ?? existing.role).trim();
+  const role = isPlatformAdmin(currentUser) ? requestedRole : 'user';
   const password = body?.password === undefined ? '' : String(body?.password || '');
+  const isActive = body?.isActive === undefined ? Boolean(existing.is_active) : Boolean(body?.isActive);
+  const companyModules = getCompanyModules(existing.company_id);
+  const modules = isPlatformAdmin(currentUser)
+    ? (role === 'admin'
+      ? companyModules
+      : getModulesForPersistence(role, body?.modules ?? getUserModules(userId)).filter((moduleKey) => companyModules.includes(moduleKey)))
+    : companyModules;
 
-  const nameError = validateEntityName(name, 'usuário');
+  const nameError = validateEntityName(name, 'usuario');
   const emailError = validateEmailAddress(email);
   const passwordError = password.trim() ? validatePasswordStrength(password) : null;
 
   if (nameError || emailError || passwordError || !['admin', 'user'].includes(role)) {
-    return sendJson(res, 400, { error: nameError || emailError || passwordError || 'Dados do usuário inválidos.' });
+    return sendJson(res, 400, { error: nameError || emailError || passwordError || 'Dados do usuario invalidos.' });
   }
 
   const duplicate = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(email, userId);
   if (duplicate) {
-    return sendJson(res, 409, { error: 'E-mail já cadastrado.' });
+    return sendJson(res, 409, { error: 'E-mail ja cadastrado.' });
   }
 
   if (existing.id === currentUser.id && role !== 'admin') {
-    return sendJson(res, 400, { error: 'Você não pode remover seu próprio acesso de administrador.' });
+    return sendJson(res, 400, { error: 'Voce nao pode remover seu proprio acesso de administrador.' });
+  }
+
+  if (existing.id === currentUser.id && !isActive) {
+    return sendJson(res, 400, { error: 'Voce nao pode desativar sua propria conta.' });
   }
 
   if (existing.role === 'admin' && role !== 'admin') {
-    const adminCount = db.prepare(`SELECT COUNT(*) AS count FROM users WHERE role = 'admin'`).get().count;
+    const adminCount = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM users
+      WHERE role = 'admin'
+        AND company_id = ?
+        AND COALESCE(is_platform_admin, 0) = 0
+    `).get(existing.company_id).count;
     if (adminCount <= 1) {
-      return sendJson(res, 400, { error: 'Não é permitido remover o último administrador do sistema.' });
+      return sendJson(res, 400, { error: 'Nao e permitido remover o ultimo administrador do sistema.' });
     }
   }
 
@@ -1029,15 +1515,20 @@ function updateUser(currentUser, res, userId, body) {
 
   db.prepare(`
     UPDATE users
-    SET name = ?, email = ?, role = ?, password_hash = ?
+    SET name = ?, email = ?, role = ?, password_hash = ?, is_active = ?
     WHERE id = ?
-  `).run(name, email, role, passwordHash, userId);
+  `).run(name, email, role, passwordHash, isActive ? 1 : 0, userId);
+
+  replaceUserModules(userId, modules);
 
   sendJson(res, 200, { ok: true });
 }
 
 function deleteUser(currentUser, res, userId) {
-  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  const existing = isPlatformAdmin(currentUser)
+    ? db.prepare('SELECT * FROM users WHERE id = ? AND COALESCE(is_platform_admin, 0) = 0').get(userId)
+    : db.prepare('SELECT * FROM users WHERE id = ? AND company_id = ? AND role = ? AND COALESCE(is_platform_admin, 0) = 0')
+      .get(userId, getTargetCompanyId(currentUser), 'user');
   if (!existing) {
     return sendJson(res, 404, { error: 'Usuário não encontrado.' });
   }
@@ -1047,19 +1538,284 @@ function deleteUser(currentUser, res, userId) {
   }
 
   if (existing.role === 'admin') {
-    const adminCount = db.prepare(`SELECT COUNT(*) AS count FROM users WHERE role = 'admin'`).get().count;
+    const adminCount = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM users
+      WHERE role = 'admin'
+        AND company_id = ?
+        AND COALESCE(is_platform_admin, 0) = 0
+    `).get(existing.company_id).count;
     if (adminCount <= 1) {
       return sendJson(res, 400, { error: 'Não é permitido excluir o último administrador do sistema.' });
     }
   }
 
+  db.prepare('DELETE FROM user_modules WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM users WHERE id = ?').run(userId);
   clearSessionsByUserId(userId);
 
   sendJson(res, 200, { ok: true });
 }
 
-function listOrders(res) {
+function listPlatformCompanies(res) {
+  const companies = db.prepare(`
+    SELECT
+      c.id,
+      c.name,
+      c.status,
+      c.contact_name,
+      c.contact_email,
+      c.contact_phone,
+      c.document,
+      c.billing_amount,
+      c.billing_due_day,
+      c.payment_status,
+      c.last_payment_date,
+      c.notes,
+      c.updated_at,
+      c.created_at,
+      COUNT(u.id) AS total_users,
+      SUM(CASE WHEN COALESCE(u.is_active, 0) = 1 THEN 1 ELSE 0 END) AS active_users
+    FROM companies c
+    LEFT JOIN users u
+      ON u.company_id = c.id
+     AND COALESCE(u.is_platform_admin, 0) = 0
+    GROUP BY c.id, c.name, c.status, c.created_at
+    ORDER BY c.created_at DESC, c.id DESC
+  `).all().map((company) => ({
+    ...company,
+    modules: getCompanyModules(company.id),
+    admin: getPrimaryCompanyAdmin(company.id)
+  }));
+
+  sendJson(res, 200, { companies });
+}
+
+function createCompany(res, body) {
+  const name = String(body?.name || '').trim();
+  const adminName = String(body?.adminName || '').trim();
+  const adminEmail = String(body?.adminEmail || '').trim().toLowerCase();
+  const adminPassword = String(body?.adminPassword || '');
+  const status = String(body?.status || 'active').trim();
+  const modules = normalizeModuleKeys(body?.modules);
+  const contactName = String(body?.contactName || '').trim();
+  const contactEmail = String(body?.contactEmail || '').trim().toLowerCase();
+  const contactPhone = String(body?.contactPhone || '').trim();
+  const document = String(body?.document || '').trim();
+  const notes = String(body?.notes || '').trim();
+  const paymentStatus = String(body?.paymentStatus || 'pending').trim();
+  const billingAmount = Number(body?.billingAmount || 0);
+  const billingDueDay = body?.billingDueDay === null || body?.billingDueDay === undefined || body?.billingDueDay === ''
+    ? null
+    : Number(body.billingDueDay);
+  const lastPaymentDate = String(body?.lastPaymentDate || '').trim() || null;
+
+  const nameError = validateEntityName(name, 'empresa');
+  const adminNameError = validateEntityName(adminName, 'usuario');
+  const emailError = validateEmailAddress(adminEmail);
+  const passwordError = validatePasswordStrength(adminPassword);
+  const contactEmailError = contactEmail ? validateEmailAddress(contactEmail) : null;
+  const billingAmountValid = Number.isFinite(billingAmount) && billingAmount >= 0;
+  const billingDueDayValid = billingDueDay === null || (Number.isInteger(billingDueDay) && billingDueDay >= 1 && billingDueDay <= 31);
+
+  if (
+    nameError ||
+    adminNameError ||
+    emailError ||
+    passwordError ||
+    contactEmailError ||
+    !['active', 'inactive'].includes(status) ||
+    !['pending', 'paid', 'overdue'].includes(paymentStatus) ||
+    !modules.length ||
+    !billingAmountValid ||
+    !billingDueDayValid
+  ) {
+    return sendJson(res, 400, { error: nameError || adminNameError || emailError || passwordError || contactEmailError || 'Dados da empresa invalidos.' });
+  }
+
+  if (db.prepare('SELECT id FROM companies WHERE name = ?').get(name)) {
+    return sendJson(res, 409, { error: 'Ja existe uma empresa com esse nome.' });
+  }
+
+  if (db.prepare('SELECT id FROM users WHERE email = ?').get(adminEmail)) {
+    return sendJson(res, 409, { error: 'Ja existe um usuario com esse e-mail.' });
+  }
+
+  try {
+    db.exec('BEGIN');
+    const companyResult = db.prepare(`
+      INSERT INTO companies (
+        name,
+        status,
+        contact_name,
+        contact_email,
+        contact_phone,
+        document,
+        billing_amount,
+        billing_due_day,
+        payment_status,
+        last_payment_date,
+        notes
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      name,
+      status,
+      contactName || adminName,
+      contactEmail || adminEmail,
+      contactPhone || null,
+      document || null,
+      billingAmount,
+      billingDueDay,
+      paymentStatus,
+      lastPaymentDate,
+      notes || null
+    );
+    const companyId = Number(companyResult.lastInsertRowid);
+    replaceCompanyModules(companyId, modules);
+    const userResult = db.prepare(`
+      INSERT INTO users (name, email, password_hash, role, is_active, is_platform_admin, company_id)
+      VALUES (?, ?, ?, 'admin', 1, 0, ?)
+    `).run(adminName, adminEmail, hashPassword(adminPassword), companyId);
+    replaceUserModules(Number(userResult.lastInsertRowid), modules);
+    db.exec('COMMIT');
+    return sendJson(res, 201, { ok: true, companyId });
+  } catch (error) {
+    db.exec('ROLLBACK');
+    console.error(error);
+    return sendJson(res, 500, { error: 'Nao foi possivel criar a empresa.' });
+  }
+}
+
+function updateCompany(res, companyId, body) {
+  const existing = db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
+  if (!existing) {
+    return sendJson(res, 404, { error: 'Empresa nao encontrada.' });
+  }
+
+  const name = String(body?.name ?? existing.name).trim();
+  const status = String(body?.status ?? existing.status).trim();
+  const modules = normalizeModuleKeys(body?.modules ?? getCompanyModules(companyId));
+  const contactName = String(body?.contactName ?? existing.contact_name ?? '').trim();
+  const contactEmail = String(body?.contactEmail ?? existing.contact_email ?? '').trim().toLowerCase();
+  const contactPhone = String(body?.contactPhone ?? existing.contact_phone ?? '').trim();
+  const document = String(body?.document ?? existing.document ?? '').trim();
+  const notes = String(body?.notes ?? existing.notes ?? '').trim();
+  const paymentStatus = String(body?.paymentStatus ?? existing.payment_status ?? 'pending').trim();
+  const billingAmount = Number(body?.billingAmount ?? existing.billing_amount ?? 0);
+  const billingDueDay = body?.billingDueDay === null || body?.billingDueDay === undefined || body?.billingDueDay === ''
+    ? null
+    : Number(body.billingDueDay);
+  const lastPaymentDate = String(body?.lastPaymentDate ?? existing.last_payment_date ?? '').trim() || null;
+  const adminName = body?.adminName === undefined ? null : String(body.adminName || '').trim();
+  const adminEmail = body?.adminEmail === undefined ? null : String(body.adminEmail || '').trim().toLowerCase();
+  const nameError = validateEntityName(name, 'empresa');
+  const contactEmailError = contactEmail ? validateEmailAddress(contactEmail) : null;
+  const adminNameError = adminName !== null && !adminName ? 'Informe o nome do administrador.' : null;
+  const adminEmailError = adminEmail !== null ? validateEmailAddress(adminEmail) : null;
+  const billingAmountValid = Number.isFinite(billingAmount) && billingAmount >= 0;
+  const billingDueDayValid = billingDueDay === null || (Number.isInteger(billingDueDay) && billingDueDay >= 1 && billingDueDay <= 31);
+
+  if (
+    nameError ||
+    contactEmailError ||
+    adminNameError ||
+    adminEmailError ||
+    !['active', 'inactive'].includes(status) ||
+    !['pending', 'paid', 'overdue'].includes(paymentStatus) ||
+    !modules.length ||
+    !billingAmountValid ||
+    !billingDueDayValid
+  ) {
+    return sendJson(res, 400, { error: nameError || contactEmailError || adminNameError || adminEmailError || 'Dados da empresa invalidos.' });
+  }
+
+  const duplicate = db.prepare('SELECT id FROM companies WHERE name = ? AND id <> ?').get(name, companyId);
+  if (duplicate) {
+    return sendJson(res, 409, { error: 'Ja existe outra empresa com esse nome.' });
+  }
+
+  const primaryAdmin = getPrimaryCompanyAdmin(companyId);
+  if (adminEmail && primaryAdmin) {
+    const duplicateAdmin = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(adminEmail, primaryAdmin.id);
+    if (duplicateAdmin) {
+      return sendJson(res, 409, { error: 'Ja existe outro usuario com esse e-mail.' });
+    }
+  }
+
+  try {
+    db.exec('BEGIN');
+
+    db.prepare(`
+      UPDATE companies
+      SET name = ?,
+          status = ?,
+          contact_name = ?,
+          contact_email = ?,
+          contact_phone = ?,
+          document = ?,
+          billing_amount = ?,
+          billing_due_day = ?,
+          payment_status = ?,
+          last_payment_date = ?,
+          notes = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      name,
+      status,
+      contactName || null,
+      contactEmail || null,
+      contactPhone || null,
+      document || null,
+      billingAmount,
+      billingDueDay,
+      paymentStatus,
+      lastPaymentDate,
+      notes || null,
+      companyId
+    );
+
+    replaceCompanyModules(companyId, modules);
+
+    if (primaryAdmin && adminName && adminEmail) {
+      db.prepare('UPDATE users SET name = ?, email = ? WHERE id = ?').run(adminName, adminEmail, primaryAdmin.id);
+    }
+
+    const companyUsers = db.prepare(`
+      SELECT id, role
+      FROM users
+      WHERE company_id = ?
+        AND COALESCE(is_platform_admin, 0) = 0
+    `).all(companyId);
+
+    for (const user of companyUsers) {
+      replaceUserModules(user.id, modules);
+    }
+
+    db.exec('COMMIT');
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    db.exec('ROLLBACK');
+    console.error(error);
+    sendJson(res, 500, { error: 'Nao foi possivel atualizar a empresa.' });
+  }
+}
+
+function getPrimaryCompanyAdmin(companyId) {
+  if (!companyId) return null;
+  return db.prepare(`
+    SELECT id, name, email, is_active, created_at
+    FROM users
+    WHERE company_id = ?
+      AND role = 'admin'
+      AND COALESCE(is_platform_admin, 0) = 0
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+  `).get(companyId) || null;
+}
+
+function listOrders(currentUser, res) {
   const orders = db.prepare(`
     SELECT
       id,
@@ -1076,14 +1832,16 @@ function listOrders(res) {
       completed_by_name,
       created_at
     FROM orders
+    WHERE company_id = ?
     ORDER BY datetime(created_at) DESC, id DESC
-  `).all();
+  `).all(getTargetCompanyId(currentUser));
 
   sendJson(res, 200, { orders });
 }
 
 function createOrder(currentUser, res, body) {
-  const load = buildLoadSummary(body?.items);
+  const companyId = getTargetCompanyId(currentUser);
+  const load = buildLoadSummary(currentUser, body?.items);
   if (load.error) {
     return sendJson(res, load.status || 400, { error: load.error });
   }
@@ -1095,8 +1853,8 @@ function createOrder(currentUser, res, body) {
     return sendJson(res, 400, { error: dateRange.error });
   }
 
-  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
-  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate);
+  const allTrucks = db.prepare('SELECT * FROM trucks WHERE company_id = ? ORDER BY volume_cm3 ASC').all(companyId);
+  const availability = buildTruckAvailabilityMap(companyId, allTrucks, dateRange.startDate, dateRange.endDate);
   const parsedSelection = parseOrderTruckSelection(body?.allocation?.trucks, requiredVolumeCm3, availability);
   if (parsedSelection.error) {
     return sendJson(res, 400, { error: parsedSelection.error });
@@ -1112,6 +1870,7 @@ function createOrder(currentUser, res, body) {
 
     const orderResult = db.prepare(`
       INSERT INTO orders (
+        company_id,
         created_by_user_id,
         created_by_name,
         scheduled_date,
@@ -1120,8 +1879,9 @@ function createOrder(currentUser, res, body) {
         status,
         total_cans,
         total_volume_cm3
-      ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)
     `).run(
+      companyId,
       currentUser.id,
       currentUser.name,
       dateRange.startDate,
@@ -1175,7 +1935,7 @@ function createOrder(currentUser, res, body) {
   }
 }
 
-function getOrderDetails(res, orderId) {
+function getOrderDetails(currentUser, res, orderId) {
   const order = db.prepare(`
     SELECT
       id,
@@ -1193,7 +1953,8 @@ function getOrderDetails(res, orderId) {
       created_at
     FROM orders
     WHERE id = ?
-  `).get(orderId);
+      AND company_id = ?
+  `).get(orderId, getTargetCompanyId(currentUser));
 
   if (!order) {
     return sendJson(res, 404, { error: 'Pedido não encontrado.' });
@@ -1258,6 +2019,7 @@ function getOrderDetails(res, orderId) {
 }
 
 function updateOrder(currentUser, res, orderId, body) {
+  const companyId = getTargetCompanyId(currentUser);
   const existing = db.prepare(`
     SELECT
       id,
@@ -1265,7 +2027,8 @@ function updateOrder(currentUser, res, orderId, body) {
       status
     FROM orders
     WHERE id = ?
-  `).get(orderId);
+      AND company_id = ?
+  `).get(orderId, companyId);
 
   if (!existing) {
     return sendJson(res, 404, { error: 'Pedido não encontrado.' });
@@ -1279,7 +2042,7 @@ function updateOrder(currentUser, res, orderId, body) {
     return sendJson(res, 400, { error: 'Somente pedidos em aberto podem ser editados.' });
   }
 
-  const load = buildLoadSummary(body?.items);
+  const load = buildLoadSummary(currentUser, body?.items);
   if (load.error) {
     return sendJson(res, load.status || 400, { error: load.error });
   }
@@ -1291,8 +2054,8 @@ function updateOrder(currentUser, res, orderId, body) {
     return sendJson(res, 400, { error: dateRange.error });
   }
 
-  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
-  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate, orderId);
+  const allTrucks = db.prepare('SELECT * FROM trucks WHERE company_id = ? ORDER BY volume_cm3 ASC').all(companyId);
+  const availability = buildTruckAvailabilityMap(companyId, allTrucks, dateRange.startDate, dateRange.endDate, orderId);
   const availableTrucks = [...availability.values()].filter((truck) => truck.availableQuantity > 0);
   if (!availableTrucks.length) {
     return sendJson(res, 422, { error: `Não há caminhões disponíveis entre ${dateRange.startDate} e ${dateRange.endDate}.` });
@@ -1360,9 +2123,14 @@ function updateOrder(currentUser, res, orderId, body) {
 }
 
 function concludeOrder(currentUser, res, orderId) {
-  const existing = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(orderId);
+  const existing = db.prepare('SELECT id, status, created_by_user_id FROM orders WHERE id = ? AND company_id = ?')
+    .get(orderId, getTargetCompanyId(currentUser));
   if (!existing) {
     return sendJson(res, 404, { error: 'Pedido não encontrado.' });
+  }
+
+  if (!canManageOrder(currentUser, existing)) {
+    return sendJson(res, 403, { error: 'VocÃª nÃ£o tem permissÃ£o para concluir este pedido.' });
   }
 
   if (existing.status === 'completed') {
@@ -1382,7 +2150,8 @@ function concludeOrder(currentUser, res, orderId) {
 }
 
 function deleteOrder(currentUser, res, orderId) {
-  const orderExists = db.prepare('SELECT id, created_by_user_id FROM orders WHERE id = ?').get(orderId);
+  const orderExists = db.prepare('SELECT id, created_by_user_id FROM orders WHERE id = ? AND company_id = ?')
+    .get(orderId, getTargetCompanyId(currentUser));
   if (!orderExists) {
     return sendJson(res, 404, { error: 'Pedido não encontrado.' });
   }
@@ -1395,7 +2164,7 @@ function deleteOrder(currentUser, res, orderId) {
     db.exec('BEGIN');
     db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderId);
     db.prepare('DELETE FROM order_trucks WHERE order_id = ?').run(orderId);
-    db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+    db.prepare('DELETE FROM orders WHERE id = ? AND company_id = ?').run(orderId, getTargetCompanyId(currentUser));
     db.exec('COMMIT');
     sendJson(res, 200, { ok: true });
   } catch (error) {
@@ -1410,15 +2179,16 @@ function canManageOrder(user, order) {
   return user.role === 'admin' || Number(order.created_by_user_id) === Number(user.id);
 }
 
-function getTruckAvailability(res, startDateRaw, endDateRaw) {
+function getTruckAvailability(currentUser, res, startDateRaw, endDateRaw) {
+  const companyId = getTargetCompanyId(currentUser);
   const dateRange = parseDateRange(startDateRaw, endDateRaw);
   if (dateRange.error) {
     return sendJson(res, 400, { error: dateRange.error });
   }
 
-  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
-  const busyRows = getUnavailableTruckRowsForRange(dateRange.startDate, dateRange.endDate);
-  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate);
+  const allTrucks = db.prepare('SELECT * FROM trucks WHERE company_id = ? ORDER BY volume_cm3 ASC').all(companyId);
+  const busyRows = getUnavailableTruckRowsForRange(companyId, dateRange.startDate, dateRange.endDate);
+  const availability = buildTruckAvailabilityMap(companyId, allTrucks, dateRange.startDate, dateRange.endDate);
   const busyTruckIds = [...availability.values()]
     .filter((item) => item.availableQuantity <= 0)
     .map((item) => item.id);
@@ -1432,7 +2202,8 @@ function getTruckAvailability(res, startDateRaw, endDateRaw) {
   });
 }
 
-function getTruckSchedule(res, startDateRaw, endDateRaw) {
+function getTruckSchedule(currentUser, res, startDateRaw, endDateRaw) {
+  const companyId = getTargetCompanyId(currentUser);
   const dateRange = parseDateRange(startDateRaw, endDateRaw);
   if (dateRange.error) {
     return sendJson(res, 400, { error: dateRange.error });
@@ -1443,7 +2214,7 @@ function getTruckSchedule(res, startDateRaw, endDateRaw) {
     return sendJson(res, 400, { error: 'A agenda aceita no máximo 45 dias por consulta.' });
   }
 
-  const trucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+  const trucks = db.prepare('SELECT * FROM trucks WHERE company_id = ? ORDER BY volume_cm3 ASC').all(companyId);
   const reservations = db.prepare(`
     SELECT
       ot.truck_id,
@@ -1459,10 +2230,11 @@ function getTruckSchedule(res, startDateRaw, endDateRaw) {
     FROM order_trucks ot
     INNER JOIN orders o ON o.id = ot.order_id
     WHERE o.status = 'open'
+      AND o.company_id = ?
       AND o.start_date <= ?
       AND o.end_date >= ?
     ORDER BY ot.truck_name ASC, o.start_date ASC, o.id ASC
-  `).all(dateRange.endDate, dateRange.startDate);
+  `).all(companyId, dateRange.endDate, dateRange.startDate);
 
   const reservationsByTruckId = new Map();
   for (const reservation of reservations) {
@@ -1545,7 +2317,7 @@ function buildDateSeries(startDate, endDate) {
   return dates;
 }
 
-function getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId = null) {
+function getUnavailableTruckRowsForRange(companyId, startDate, endDate, excludedOrderId = null) {
   const sql = `
     SELECT
       ot.truck_id,
@@ -1558,6 +2330,7 @@ function getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId = n
     FROM order_trucks ot
     INNER JOIN orders o ON o.id = ot.order_id
     WHERE o.status = 'open'
+      AND o.company_id = ?
       AND o.start_date <= ?
       AND o.end_date >= ?
       ${excludedOrderId ? 'AND o.id <> ?' : ''}
@@ -1565,17 +2338,17 @@ function getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId = n
   `;
 
   return excludedOrderId
-    ? db.prepare(sql).all(endDate, startDate, excludedOrderId)
-    : db.prepare(sql).all(endDate, startDate);
+    ? db.prepare(sql).all(companyId, endDate, startDate, excludedOrderId)
+    : db.prepare(sql).all(companyId, endDate, startDate);
 }
 
-function getUnavailableTruckIdsForRange(startDate, endDate, excludedOrderId = null) {
-  const rows = getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId);
+function getUnavailableTruckIdsForRange(companyId, startDate, endDate, excludedOrderId = null) {
+  const rows = getUnavailableTruckRowsForRange(companyId, startDate, endDate, excludedOrderId);
   return new Set(rows.map((row) => row.truck_id));
 }
 
-function buildTruckAvailabilityMap(trucks, startDate, endDate, excludedOrderId = null) {
-  const reservedRows = startDate && endDate ? getUnavailableTruckRowsForRange(startDate, endDate, excludedOrderId) : [];
+function buildTruckAvailabilityMap(companyId, trucks, startDate, endDate, excludedOrderId = null) {
+  const reservedRows = startDate && endDate ? getUnavailableTruckRowsForRange(companyId, startDate, endDate, excludedOrderId) : [];
   const reservedByTruckId = new Map();
   for (const row of reservedRows) {
     reservedByTruckId.set(row.truck_id, (reservedByTruckId.get(row.truck_id) || 0) + Number(row.quantity_reserved || 1));
@@ -1672,7 +2445,7 @@ function parseOrderTruckSelection(rawTrucks, totalVolumeCm3, availability = new 
 function parseCanPayload(body) {
   const name = String(body?.name || '').trim();
   const shape = String(body?.shape || '').trim();
-  const nameError = validateEntityName(name, 'lata');
+  const nameError = validateEntityName(name, 'produto');
 
   if (nameError || !['square', 'cylinder'].includes(shape)) {
     return { error: nameError || 'Nome e formato válido são obrigatórios.' };
@@ -1696,7 +2469,7 @@ function parseCanPayload(body) {
     depthCm = heightCm;
 
     if (![lengthCm, widthCm, depthCm].every((value) => Number.isFinite(value) && value > 0)) {
-      return { error: 'Medidas da lata quadrada inválidas.' };
+      return { error: 'Medidas do produto retangular invalidas.' };
     }
 
     geometryVolumeCm3 = lengthCm * widthCm * depthCm;
@@ -1707,7 +2480,7 @@ function parseCanPayload(body) {
       diameterCm = circumferenceCm / Math.PI;
     }
     if (!Number.isFinite(diameterCm) || diameterCm <= 0) {
-      return { error: 'Circunferência inválida para lata cilíndrica.' };
+      return { error: 'Circunferencia invalida para produto cilindrico.' };
     }
 
     geometryVolumeCm3 = Math.PI * (diameterCm / 2) ** 2 * heightCm;
@@ -1727,13 +2500,13 @@ function parseCanPayload(body) {
   };
 }
 
-function calculateLoad(res, body) {
-  const load = buildLoadSummary(body?.items);
+function calculateLoad(currentUser, res, body) {
+  const load = buildLoadSummary(currentUser, body?.items);
   if (load.error) {
     return sendJson(res, load.status || 400, { error: load.error });
   }
 
-  const allTrucks = db.prepare('SELECT * FROM trucks ORDER BY volume_cm3 ASC').all();
+  const allTrucks = db.prepare('SELECT * FROM trucks WHERE company_id = ? ORDER BY volume_cm3 ASC').all(getTargetCompanyId(currentUser));
   if (!allTrucks.length) {
     return sendJson(res, 422, { error: 'Não há caminhões cadastrados para calcular a carga.' });
   }
@@ -1750,7 +2523,7 @@ function calculateLoad(res, body) {
     return sendJson(res, 400, { error: dateRange.error });
   }
 
-  const availability = buildTruckAvailabilityMap(allTrucks, dateRange.startDate, dateRange.endDate);
+  const availability = buildTruckAvailabilityMap(getTargetCompanyId(currentUser), allTrucks, dateRange.startDate, dateRange.endDate);
   const unavailableTruckIds = new Set(
     [...availability.values()].filter((truck) => truck.availableQuantity <= 0).map((truck) => truck.id)
   );
@@ -1995,7 +2768,7 @@ function calculateManualLoad(res, body, load, trucks, context = {}) {
   return sendJson(res, 400, { error: 'Tipo de distribuição manual inválido.' });
 }
 
-function buildLoadSummary(itemsInput) {
+function buildLoadSummary(currentUser, itemsInput) {
   const items = Array.isArray(itemsInput) ? itemsInput : [];
   if (!items.length) {
     return { error: 'Adicione ao menos um item na carga.', status: 400 };
@@ -2006,10 +2779,11 @@ function buildLoadSummary(itemsInput) {
   let totalCans = 0;
   const breakdown = [];
 
-  // Buscar dados completos das latas para cálculo 3D
+  // Buscar dados completos dos produtos para calculo 3D
   const canIds = items.map(item => Number(item.canId));
+  const companyId = getTargetCompanyId(currentUser);
   const cansData = canIds.length > 0 ? 
-    db.prepare(`SELECT id, name, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3 FROM cans WHERE id IN (${canIds.map(() => '?').join(',')})`).all(...canIds) : [];
+    db.prepare(`SELECT id, name, shape, length_cm, width_cm, depth_cm, diameter_cm, height_cm, volume_cm3 FROM cans WHERE company_id = ? AND id IN (${canIds.map(() => '?').join(',')})`).all(companyId, ...canIds) : [];
 
   for (const item of items) {
     const canId = Number(item?.canId);
@@ -2020,14 +2794,14 @@ function buildLoadSummary(itemsInput) {
 
     const can = cansData.find(c => c.id === canId);
     if (!can) {
-      return { error: `Lata ${canId} não encontrada.`, status: 404 };
+      return { error: `Produto ${canId} nao encontrado.`, status: 404 };
     }
 
     const itemVolume = can.volume_cm3 * quantity;
     
     const dimensions = getPackingDimensions(can);
     if (!dimensions) {
-      return { error: `Dimensões inválidas para a lata ${can.name}.`, status: 400 };
+      return { error: `Dimensoes invalidas para o produto ${can.name}.`, status: 400 };
     }
     const effectiveVolume = dimensions.length * dimensions.width * dimensions.height * quantity;
     
@@ -2265,7 +3039,7 @@ function findBestFleetForAutomatic(totalVolumeCm3, trucks) {
 
 function getSessionContext(req) {
   const cookies = parseCookies(req.headers.cookie || '');
-  const token = cookies.sid;
+  const token = cookies[getSessionCookieName(req)] || cookies['__Host-sid'] || cookies.sid;
   if (!token) return null;
 
   const session = sessions.get(token);
@@ -2286,9 +3060,17 @@ function getSessionContext(req) {
   }
 
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.userId);
-  if (!user) {
+  if (!user || !user.is_active) {
     sessions.delete(token);
     return null;
+  }
+
+  if (!isPlatformAdmin(user) && user.company_id) {
+    const company = db.prepare('SELECT status FROM companies WHERE id = ?').get(user.company_id);
+    if (!company || company.status !== 'active') {
+      sessions.delete(token);
+      return null;
+    }
   }
 
   session.expiresAt = Date.now() + SESSION_TTL_MS;
@@ -2313,12 +3095,52 @@ function requireAuth(req, res) {
   return requireSession(req, res)?.user || null;
 }
 
+function isPlatformAdmin(user) {
+  return Boolean(user?.is_platform_admin);
+}
+
 function requireAdmin(req, res) {
   const user = requireAuth(req, res);
   if (!user) return null;
 
   if (user.role !== 'admin') {
     sendJson(res, 403, { error: 'Apenas administradores podem acessar este recurso.' });
+    return null;
+  }
+
+  return user;
+}
+
+function requireModuleAccess(req, res, moduleKey) {
+  const user = requireAuth(req, res);
+  if (!user) return null;
+
+  if (!userHasModule(user, moduleKey)) {
+    sendJson(res, 403, { error: 'Seu usuario nao possui acesso a este modulo.' });
+    return null;
+  }
+
+  return user;
+}
+
+function requireCompanyModuleAccess(req, res, moduleKey) {
+  const user = requireModuleAccess(req, res, moduleKey);
+  if (!user) return null;
+
+  if (isPlatformAdmin(user) || !Number(user.company_id || 0)) {
+    sendJson(res, 403, { error: 'Este recurso operacional exige um usuario vinculado a uma empresa.' });
+    return null;
+  }
+
+  return user;
+}
+
+function requirePlatformAdmin(req, res) {
+  const user = requireAdmin(req, res);
+  if (!user) return null;
+
+  if (!isPlatformAdmin(user)) {
+    sendJson(res, 403, { error: 'Apenas o administrador master pode acessar este recurso.' });
     return null;
   }
 
@@ -2391,11 +3213,26 @@ function verifyPassword(password, fullHash) {
 }
 
 function safeUser(user) {
+  const company = user.company_id
+    ? db.prepare('SELECT id, name, status FROM companies WHERE id = ?').get(user.company_id)
+    : null;
+  const companyModules = company ? getCompanyModules(company.id) : [];
+  const userModules = isPlatformAdmin(user)
+    ? AVAILABLE_MODULES.map((module) => module.key)
+    : companyModules;
+
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     role: user.role,
+    isActive: Boolean(user.is_active),
+    isPlatformAdmin: isPlatformAdmin(user),
+    companyId: company?.id || null,
+    companyName: company?.name || 'Plataforma',
+    companyStatus: company?.status || 'active',
+    companyModules,
+    modules: userModules,
     createdAt: user.created_at
   };
 }
@@ -2411,6 +3248,10 @@ function parseCookies(cookieHeader) {
   }
 
   return result;
+}
+
+function getSessionCookieName(req) {
+  return isSecureRequest(req) ? '__Host-sid' : 'sid';
 }
 
 function setCookie(res, name, value, options = {}) {
@@ -2537,9 +3378,12 @@ function getBaseHeaders({ contentType, cacheControl } = {}) {
     'Cross-Origin-Resource-Policy': 'same-origin',
     'Origin-Agent-Cluster': '?1',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-    'Referrer-Policy': 'same-origin',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'SAMEORIGIN',
+    'X-Permitted-Cross-Domain-Policies': 'none',
     'X-Robots-Tag': 'noindex, nofollow'
   };
 }
@@ -2699,3 +3543,4 @@ function enforceApiRateLimit(req, res, method) {
 
   return true;
 }
+
