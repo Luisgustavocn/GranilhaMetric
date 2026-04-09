@@ -2474,14 +2474,16 @@ function parseCanPayload(body) {
 
     geometryVolumeCm3 = lengthCm * widthCm * depthCm;
   } else {
-    const circumferenceCm = Number(body?.circumferenceCm);
     diameterCm = Number(body?.diameterCm);
+    const circumferenceCm = Number(body?.circumferenceCm);
     if (Number.isFinite(circumferenceCm) && circumferenceCm > 0) {
       diameterCm = circumferenceCm / Math.PI;
     }
     if (!Number.isFinite(diameterCm) || diameterCm <= 0) {
-      return { error: 'Circunferencia invalida para produto cilindrico.' };
+      return { error: 'Diâmetro inválido para produto cilíndrico.' };
     }
+
+    diameterCm = Number(diameterCm.toFixed(2));
 
     geometryVolumeCm3 = Math.PI * (diameterCm / 2) ** 2 * heightCm;
   }
@@ -3543,4 +3545,3 @@ function enforceApiRateLimit(req, res, method) {
 
   return true;
 }
-

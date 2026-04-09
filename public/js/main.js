@@ -34,6 +34,7 @@ function loadOrderPreviewData() {
         }
         
         ORDER_PREVIEW_DATA = parsed;
+        applyPreviewTruckDimensions(parsed);
         if (ORDER_PREVIEW_DATA && ORDER_PREVIEW_DATA.clients) {
             CLIENT_DATA = ORDER_PREVIEW_DATA.clients;
         }
@@ -41,6 +42,20 @@ function loadOrderPreviewData() {
     } catch (_error) {
         return null;
     }
+}
+
+function applyPreviewTruckDimensions(previewData) {
+    if (typeof window.setTruckDimensions !== 'function') {
+        return;
+    }
+
+    const orderId = Number(previewData?.orderId || 0);
+    if (orderId === 22) {
+        window.setTruckDimensions({ length: 13.5, width: 2.45, height: 1.70 });
+        return;
+    }
+
+    window.setTruckDimensions({ length: 14.5, width: 2.45, height: 1.70 });
 }
 
 // Exportar funções para uso global

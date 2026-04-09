@@ -3,21 +3,25 @@
 // ========================================================================
 
 // Constantes do caminhão
-const TRUCK_DIMENSIONS = {
+const DEFAULT_TRUCK_DIMENSIONS = {
     length: 14.5,
     width: 2.45,
     height: 1.70
 };
 
+const TRUCK_DIMENSIONS = {
+    ...DEFAULT_TRUCK_DIMENSIONS
+};
+
 // Constantes
-const GAP_STACK = 0.01;
-const GAP_CLIENTE = 0.05;
-const MIN_Z_EDGE = -TRUCK_DIMENSIONS.width / 2 + GAP_STACK;
-const MAX_Z_EDGE = TRUCK_DIMENSIONS.width / 2 - GAP_STACK;
-const MIN_X_LIMIT = -TRUCK_DIMENSIONS.length / 2 + GAP_STACK;
+const GAP_STACK = 0.005;
+const GAP_CLIENTE = GAP_STACK;
+let MIN_Z_EDGE = -TRUCK_DIMENSIONS.width / 2 + GAP_STACK;
+let MAX_Z_EDGE = TRUCK_DIMENSIONS.width / 2 - GAP_STACK;
+let MIN_X_LIMIT = -TRUCK_DIMENSIONS.length / 2 + GAP_STACK;
 const FLOOR_Y = 0.01;
 const TOP_CLEARANCE = 0.01;
-const REAR_START_X = TRUCK_DIMENSIONS.length / 2 - GAP_STACK;
+let REAR_START_X = TRUCK_DIMENSIONS.length / 2 - GAP_STACK;
 
 // Exportar constantes para uso global
 window.TRUCK_DIMENSIONS = TRUCK_DIMENSIONS;
@@ -29,6 +33,29 @@ window.MIN_X_LIMIT = MIN_X_LIMIT;
 window.FLOOR_Y = FLOOR_Y;
 window.TOP_CLEARANCE = TOP_CLEARANCE;
 window.REAR_START_X = REAR_START_X;
+
+function setTruckDimensions(dimensions = {}) {
+    const nextLength = Number(dimensions.length);
+    const nextWidth = Number(dimensions.width);
+    const nextHeight = Number(dimensions.height);
+
+    TRUCK_DIMENSIONS.length = nextLength > 0 ? nextLength : DEFAULT_TRUCK_DIMENSIONS.length;
+    TRUCK_DIMENSIONS.width = nextWidth > 0 ? nextWidth : DEFAULT_TRUCK_DIMENSIONS.width;
+    TRUCK_DIMENSIONS.height = nextHeight > 0 ? nextHeight : DEFAULT_TRUCK_DIMENSIONS.height;
+
+    MIN_Z_EDGE = -TRUCK_DIMENSIONS.width / 2 + GAP_STACK;
+    MAX_Z_EDGE = TRUCK_DIMENSIONS.width / 2 - GAP_STACK;
+    MIN_X_LIMIT = -TRUCK_DIMENSIONS.length / 2 + GAP_STACK;
+    REAR_START_X = TRUCK_DIMENSIONS.length / 2 - GAP_STACK;
+
+    window.MIN_Z_EDGE = MIN_Z_EDGE;
+    window.MAX_Z_EDGE = MAX_Z_EDGE;
+    window.MIN_X_LIMIT = MIN_X_LIMIT;
+    window.REAR_START_X = REAR_START_X;
+}
+
+setTruckDimensions(DEFAULT_TRUCK_DIMENSIONS);
+window.setTruckDimensions = setTruckDimensions;
 
 function normalizeDimensions(dimensions) {
     if (!Array.isArray(dimensions) || dimensions.length < 3) return dimensions;

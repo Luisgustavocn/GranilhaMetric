@@ -13,6 +13,7 @@ const SHOW_SCENE_DEBUG = false;
 // Cache para geometrias e materiais (pode ficar local aqui)
 let geometryCache = new Map();
 let materialCache = new Map();
+const VISUAL_BOX_INSET = 0;
 
 function initScene() {
     const container = document.getElementById('canvas-container');
@@ -182,10 +183,15 @@ function resetView() {
 }
 
 // Renderização otimizada
-function getOrCreateGeometry(width, height, depth) {
-    const key = `${width}x${height}x${depth}`;
+function getOrCreateGeometry(shape, width, height, depth) {
+    const key = `${shape}:${width}x${height}x${depth}`;
     if (!geometryCache.has(key)) {
-        geometryCache.set(key, new THREE.BoxGeometry(width, height, depth));
+        if (shape === 'cylinder') {
+            const radius = Math.max(0.0005, Math.min(width, depth) / 2);
+            geometryCache.set(key, new THREE.CylinderGeometry(radius, radius, height, 24));
+        } else {
+            geometryCache.set(key, new THREE.BoxGeometry(width, height, depth));
+        }
     }
     return geometryCache.get(key);
 }
@@ -201,9 +207,41 @@ function getOrCreateMaterial(color) {
     return materialCache.get(color);
 }
 
-function createBoxMesh(item, position) {
+function getVisualBoxDimensions(position) {
+    const shrink = VISUAL_BOX_INSET * 2;
+    return {
+        width: Math.max(0.001, Number(position.width || 0) - shrink),
+        height: Math.max(0.001, Number(position.height || 0) - shrink),
+        depth: Math.max(0.001, Number(position.depth || 0) - shrink)
+    };
+}
+
+function getVisualCylinderDimensions(item, position) {
+    const shrink = VISUAL_BOX_INSET * 2;
+    const [renderWidth = position.width, renderHeight = position.height, renderDepth = position.depth] =
+        Array.isArray(item.renderDimensions) ? item.renderDimensions : [];
+
+    return {
+        width: Math.max(0.001, Math.min(Number(position.width || 0), Number(renderWidth || 0) || Number(position.width || 0)) - shrink),
+        height: Math.max(0.001, Math.min(Number(position.height || 0), Number(renderHeight || 0) || Number(position.height || 0)) - shrink),
+        depth: Math.max(0.001, Math.min(Number(position.depth || 0), Number(renderDepth || 0) || Number(position.depth || 0)) - shrink)
+    };
+}
+
+function getVisualMeshConfig(item, position) {
+    const shape = item?.shape === 'cylinder' || item?.type === 'cylinder' ? 'cylinder' : 'box';
+    const dimensions = shape === 'cylinder'
+        ? getVisualCylinderDimensions(item, position)
+        : getVisualBoxDimensions(position);
+
+    return { shape, dimensions };
+}
+
+function createCargoMesh(item, position) {
+    const { shape, dimensions } = getVisualMeshConfig(item, position);
+
     // Agrupar por tipo para instancing
-    const geometryKey = `${position.width}x${position.height}x${position.depth}`;
+    const geometryKey = `${shape}:${dimensions.width}x${dimensions.height}x${dimensions.depth}`;
     const materialKey = `mat_${item.color || 0x4287f5}`;
     const instanceKey = `${geometryKey}_${materialKey}`;
     
@@ -213,7 +251,12 @@ function createBoxMesh(item, position) {
 
     const instanceGroups = window.instanceGroups;
     if (!instanceGroups[instanceKey]) {
-        const geometry = getOrCreateGeometry(position.width, position.height, position.depth);
+        const geometry = getOrCreateGeometry(
+            shape,
+            dimensions.width,
+            dimensions.height,
+            dimensions.depth
+        );
         const material = getOrCreateMaterial(item.color || 0x4287f5);
         const instancedMesh = createInstancedMesh(geometry, material, 256);
         

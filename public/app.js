@@ -2316,14 +2316,6 @@ async function onLaunchOrder() {
   showToast(`Pedido #${response.data.orderId} lançado com sucesso.`);
 }
 
-const CYLINDER_EQUIVALENT_SQUARE_FACTOR = Math.sqrt(Math.PI / 4);
-
-function getEquivalentCylinderPackingSide(diameter) {
-  const numericDiameter = Number(diameter || 0);
-  if (!(numericDiameter > 0)) return 0;
-  return numericDiameter * CYLINDER_EQUIVALENT_SQUARE_FACTOR;
-}
-
 function getOrderItemVisualizationDimensions(item) {
   const height = Number(item.can_height_cm || 0) / 100;
   if (!(height > 0)) return null;
@@ -2331,14 +2323,33 @@ function getOrderItemVisualizationDimensions(item) {
   if (item.can_shape === 'cylinder') {
     const diameter = Number(item.can_diameter_cm || item.can_length_cm || item.can_width_cm || 0) / 100;
     if (!(diameter > 0)) return null;
-    const side = getEquivalentCylinderPackingSide(diameter);
-    return { width: side, height, depth: side };
+    return { width: diameter, height, depth: diameter };
   }
 
   const width = Number(item.can_length_cm || item.can_width_cm || item.can_depth_cm || 0) / 100;
   const depth = Number(item.can_width_cm || item.can_depth_cm || item.can_length_cm || 0) / 100;
   if (!(width > 0) || !(depth > 0)) return null;
   return { width, height, depth };
+}
+
+function getOrderItemVisualizationShape(item) {
+  return item.can_shape === 'cylinder' ? 'cylinder' : 'box';
+}
+
+function getOrderItemRenderDimensions(item) {
+  const height = Number(item.can_height_cm || 0) / 100;
+  if (!(height > 0)) return null;
+
+  if (item.can_shape === 'cylinder') {
+    const diameter = Number(item.can_diameter_cm || item.can_length_cm || item.can_width_cm || 0) / 100;
+    if (!(diameter > 0)) return null;
+    return [diameter, height, diameter];
+  }
+
+  const width = Number(item.can_length_cm || item.can_width_cm || item.can_depth_cm || 0) / 100;
+  const depth = Number(item.can_width_cm || item.can_depth_cm || item.can_length_cm || 0) / 100;
+  if (!(width > 0) || !(depth > 0)) return null;
+  return [width, height, depth];
 }
 
 function buildOrderVisualizationPayload(order, groupedItems) {
@@ -2349,10 +2360,13 @@ function buildOrderVisualizationPayload(order, groupedItems) {
     const items = clientGroup.items
       .map((item) => {
         const dimensions = getOrderItemVisualizationDimensions(item);
-        if (!dimensions) return null;
+        const renderDimensions = getOrderItemRenderDimensions(item);
+        if (!dimensions || !renderDimensions) return null;
         return {
           name: item.can_name,
           dimensions: [dimensions.width, dimensions.height, dimensions.depth],
+          shape: getOrderItemVisualizationShape(item),
+          renderDimensions,
           quantity: Math.max(0, Number(item.quantity || 0))
         };
       })
@@ -2381,7 +2395,11 @@ function buildCurrentLoadVisualizationPayload() {
     if (!can) return;
 
     const dimensions = getCanPackingDimensions(can);
+    const renderDimensions = getCanRenderDimensions(can);
     if (!(dimensions.width > 0) || !(dimensions.height > 0) || !(dimensions.depth > 0)) {
+      return;
+    }
+    if (!renderDimensions) {
       return;
     }
 
@@ -2393,6 +2411,8 @@ function buildCurrentLoadVisualizationPayload() {
     groupedClients.get(clientName).push({
       name: can.name,
       dimensions: [dimensions.width, dimensions.height, dimensions.depth],
+      shape: can.shape === 'cylinder' ? 'cylinder' : 'box',
+      renderDimensions,
       quantity: Math.max(0, Number(row.quantity || 0))
     });
   });
@@ -2866,8 +2886,8 @@ function onOpenCanCreateModal() {
       <label class="modal-shape-square">Lado 2 (cm)
         <input name="side2Cm" type="number" min="0.1" step="0.1" />
       </label>
-      <label class="modal-shape-cylinder hidden">Circunferencia (cm)
-        <input name="circumferenceCm" type="number" min="0.1" step="0.1" />
+      <label class="modal-shape-cylinder hidden">Diâmetro (cm)
+        <input name="diameterCm" type="number" min="0.01" step="0.01" />
       </label>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">Cadastrar produto</button>
@@ -2892,7 +2912,7 @@ function onOpenCanCreateModal() {
         heightCm: Number(formData.get('heightCm')),
         side1Cm: Number(formData.get('side1Cm')),
         side2Cm: Number(formData.get('side2Cm')),
-        circumferenceCm: Number(formData.get('circumferenceCm'))
+        diameterCm: Number(formData.get('diameterCm'))
       }
     });
 
@@ -3018,8 +3038,8 @@ function openCanModal(canId) {
       <label class="modal-shape-square">Lado 2 (cm)
         <input name="side2Cm" type="number" min="0.1" step="0.1" value="${can.width_cm ?? ''}" />
       </label>
-      <label class="modal-shape-cylinder">Circunferência (cm)
-        <input name="circumferenceCm" type="number" min="0.1" step="0.1" value="${diameterToCircumference(can.diameter_cm)}" />
+      <label class="modal-shape-cylinder">Diâmetro (cm)
+        <input name="diameterCm" type="number" min="0.01" step="0.01" value="${formatDiameterCm(can.diameter_cm)}" />
       </label>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">Salvar alterações</button>
@@ -3044,7 +3064,7 @@ function openCanModal(canId) {
       heightCm: Number(formData.get('heightCm')),
       side1Cm: Number(formData.get('side1Cm')),
       side2Cm: Number(formData.get('side2Cm')),
-      circumferenceCm: Number(formData.get('circumferenceCm'))
+      diameterCm: Number(formData.get('diameterCm'))
     };
 
     const response = await api(`/api/cans/${can.id}`, { method: 'PUT', body: payload });
@@ -3528,7 +3548,7 @@ async function onCreateCan(event) {
     heightCm: Number(form.get('heightCm')),
     side1Cm: Number(form.get('side1Cm')),
     side2Cm: Number(form.get('side2Cm')),
-    circumferenceCm: Number(form.get('circumferenceCm'))
+    diameterCm: Number(form.get('diameterCm'))
   };
 
   const response = await api('/api/cans', { method: 'POST', body: payload });
@@ -3542,6 +3562,12 @@ async function onCreateCan(event) {
   await loadData();
   renderApp();
   showToast('Produto cadastrado.');
+}
+
+function formatDiameterCm(value) {
+  const diameter = Number(value || 0);
+  if (!(diameter > 0)) return '';
+  return diameter.toFixed(2);
 }
 
 async function onCreateTruck(event) {
@@ -3589,12 +3615,6 @@ function updateProgress(currentStep) {
   } else if (currentStep === 'launch') {
     stepLaunch.classList.add('active');
   }
-}
-
-function diameterToCircumference(diameterCm) {
-  const diameter = Number(diameterCm || 0);
-  if (!(diameter > 0)) return '';
-  return (Math.PI * diameter).toFixed(1);
 }
 
 function onSelectedClientChange() {
@@ -4716,7 +4736,7 @@ function formatCanDimensions(can) {
     return `Alt ${can.height_cm} | Lado 1 ${can.length_cm} | Lado 2 ${can.width_cm} cm`;
   }
 
-  return `Alt ${can.height_cm} | Circ ${diameterToCircumference(can.diameter_cm)} cm`;
+  return `Alt ${can.height_cm} | Diam ${formatDiameterCm(can.diameter_cm)} cm`;
 }
 
 function buildTruckAvailabilityLookup(items) {
@@ -4969,8 +4989,7 @@ function getCanPackingDimensions(can) {
 
     if (can.shape === 'cylinder') {
         const diameter = Number(can.diameter_cm || can.length_cm || can.width_cm || 0) / 100;
-        const side = getEquivalentCylinderPackingSide(diameter);
-        return { width: side, height, depth: side };
+        return { width: diameter, height, depth: diameter };
     }
 
     return {
@@ -4978,6 +4997,29 @@ function getCanPackingDimensions(can) {
         height,
         depth: Number(can.width_cm || can.length_cm || 0) / 100
     };
+}
+
+function getCanRenderDimensions(can) {
+    const height = Number(can.height_cm || 0) / 100;
+    if (!(height > 0)) {
+        return null;
+    }
+
+    if (can.shape === 'cylinder') {
+        const diameter = Number(can.diameter_cm || can.length_cm || can.width_cm || 0) / 100;
+        if (!(diameter > 0)) {
+            return null;
+        }
+        return [diameter, height, diameter];
+    }
+
+    const width = Number(can.length_cm || can.width_cm || 0) / 100;
+    const depth = Number(can.width_cm || can.length_cm || 0) / 100;
+    if (!(width > 0) || !(depth > 0)) {
+        return null;
+    }
+
+    return [width, height, depth];
 }
 
 function buildVisualizationItems() {
